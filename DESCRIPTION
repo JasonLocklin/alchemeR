@@ -16,7 +16,10 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports:
     cli,
+    DBI,
+    dbplyr,
     dplyr,
+    duckdb (>= 1.5.2),
     glue,
     httr2 (>= 1.0.0),
     jsonlite,
