@@ -26,6 +26,7 @@ Imports:
     lifecycle,
     purrr,
     rlang,
+    stats,
     tibble,
     utils
 Suggests:
