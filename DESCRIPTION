@@ -1,8 +1,9 @@
 Package: alchemeR
 Title: Download 'Alchemer' Survey Data
 Version: 0.0.0.9000
-Authors@R: 
-    person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre"))
+Authors@R: c(
+    person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre")),
+    person("Jason", "Locklin", , "locklin.jason@gmail.com", role = "ctb"))
 Description: Provides functions to access Alchemer data directly into R using 
   the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey 
   and data collection software platform. See <https://apihelp.alchemer.com/help> 
