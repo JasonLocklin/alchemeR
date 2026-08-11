@@ -1,0 +1,40 @@
+url: https://grousell.github.io/alchemeR/
+
+template:
+  bootstrap: 5
+
+reference:
+- title: Ingestion and layers
+  contents:
+  - ingest
+  - pub_layer
+
+- title: Reading the application database
+  contents:
+  - alchemer_db
+  - alchemer_tbl
+  - survey_wide
+
+- title: Maintenance
+  contents:
+  - db_status
+  - db_check
+  - compact
+  - expire_history
+  - expunge
+
+- title: Direct API access
+  contents:
+  - alchemer_surveys
+  - alchemer_survey
+  - alchemer_questions
+  - alchemer_responses
+  - alchemer_campaigns
+  - alchemer_statistics
+  - alchemer_client
+
+- title: Deprecated
+  contents:
+  - all_surveys
+  - fetch_survey
+  - fetch_data_dictionary

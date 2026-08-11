@@ -1,0 +1,7 @@
+linters: linters_with_defaults(
+    line_length_linter(100),
+    object_name_linter(styles = "snake_case")
+  )
+exclusions: list(
+    "tests/testthat.R"
+  )

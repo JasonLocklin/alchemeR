@@ -3,3 +3,4 @@
 export(all_surveys)
 export(fetch_data_dictionary)
 export(fetch_survey)
+importFrom(rlang,.data)

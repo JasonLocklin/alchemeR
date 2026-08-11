@@ -41,7 +41,7 @@ fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key", 
 
     temp_survey_df <- jsonlite::fromJSON(survey$url, flatten = TRUE)
 
-    is_sso <- any(stringr::str_detect (names(temp_survey_df$data), "ssoconfirmation"))
+    is_sso <- any(grepl("ssoconfirmation", names(temp_survey_df$data), fixed = TRUE))
 
     if (length(temp_survey_df$data) == 0) {
       break
@@ -65,8 +65,8 @@ fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key", 
     }
   }
 
-  names(new_df) <- stringr::str_replace_all(names(new_df), "survey_data.", "Q")
-  names(new_df) <- stringr::str_replace_all(names(new_df), ".answer", "")
+  names(new_df) <- gsub("survey_data.", "Q", names(new_df), fixed = TRUE)
+  names(new_df) <- gsub(".answer", "", names(new_df), fixed = TRUE)
 
   utils::write.csv(
     new_df,

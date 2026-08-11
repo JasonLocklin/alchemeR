@@ -6,10 +6,15 @@
 \alias{alchemeR-package}
 \title{alchemeR: Download 'Alchemer' Survey Data}
 \description{
-Provides functions to access Alchemer data directly into R using the 'Alchemer' API. 'Alchemer' \url{https://www.alchemer.com/} is an online survey and data collection software platform. See \url{https://apihelp.alchemer.com/help} for more information about their API. This package is community-maintained and is not officially supported by 'Alchemer'.
+Provides functions to ingest 'Alchemer' survey data into a local DuckLake application database, and to access 'Alchemer' data directly via the 'Alchemer' API. 'Alchemer' \url{https://www.alchemer.com/} is an online survey and data collection software platform. See \url{https://apihelp.alchemer.com/help} for more information about their API. This package is community-maintained and is not officially supported by 'Alchemer'.
 }
 \author{
 \strong{Maintainer}: Rousell Greg \email{grousell@gmail.com}
+
+Other contributors:
+\itemize{
+  \item Jason Locklin \email{locklin.jason@gmail.com} [contributor]
+}
 
 }
 \keyword{internal}

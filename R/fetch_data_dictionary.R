@@ -43,18 +43,18 @@ fetch_data_dictionary <- function(survey_id, token = "token", secret_key = "secr
   })
 
   temp_df |>
-    dplyr::select(id,
-                  "label" = title.English,
-                  options) |>
+    dplyr::select(.data$id,
+                  "label" = .data$title.English,
+                  .data$options) |>
     tidyr::unnest(options,
                   names_sep = "_",
                   keep_empty = TRUE) |>
     dplyr::select(
-      "question_id" = id,
-      label,
-      options_id,
-      options_value) |>
-    dplyr::mutate(question_id = glue::glue("Q{question_id}"))
+      "question_id" = .data$id,
+      .data$label,
+      .data$options_id,
+      .data$options_value) |>
+    dplyr::mutate(question_id = glue::glue("Q{.data$question_id}"))
 
 }
 

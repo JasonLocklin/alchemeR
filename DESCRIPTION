@@ -1,23 +1,33 @@
 Package: alchemeR
 Title: Download 'Alchemer' Survey Data
-Version: 0.0.0.9000
+Version: 1.0.0
 Authors@R: c(
     person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre")),
     person("Jason", "Locklin", , "locklin.jason@gmail.com", role = "ctb"))
-Description: Provides functions to access Alchemer data directly into R using 
-  the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey 
-  and data collection software platform. See <https://apihelp.alchemer.com/help> 
+Description: Provides functions to ingest 'Alchemer' survey data into a local
+  DuckLake application database, and to access 'Alchemer' data directly via
+  the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey
+  and data collection software platform. See <https://apihelp.alchemer.com/help>
   for more information about their API. This package is community-maintained and
   is not officially supported by 'Alchemer'.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.2.3
-Imports: 
+RoxygenNote: 7.3.3
+Imports:
     dplyr,
     glue,
-    httr2,
+    httr2 (>= 1.0.0),
     jsonlite,
-    stringr,
+    rlang,
     tidyr,
     utils
+Suggests:
+    httptest2,
+    keyring,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3
+VignetteBuilder: knitr
