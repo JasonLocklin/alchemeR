@@ -56,9 +56,9 @@ alchemer.duckdb
 
 Published survey tables only.
 
-### Credentials
+### Configuratiom
 
-Use keyring exclusively.
+Minimal configuration is required. All by environment variables. Example Renviron file provided includes connection information. Default schema. Also, an alternate schema and list of survey ids that should be published to the alternate schema. A flag to enable publishing the final tables. Final tables are also stored in the application database regardless. Service account passwords are stored with the keyring package. 
 
 ## Data Model in DuckDB
 
@@ -266,7 +266,7 @@ These metadata tables allow analysts to interpret survey-specific tables correct
 
 One table per survey.
 
-Structure should remain very close to Alchemer exports.
+Structure should remain very close to Alchemer exports. Err toward "tidy data" where a choice of data shape must be made.
 
 No survey-specific cleaning.
 
@@ -280,28 +280,16 @@ Publish via:
 - validation
 - atomic replace
 
-Never append directly to published survey tables.
+Never append directly to published survey tables. If surveys are removed from Alchemer, this is recorded but data is not removed from either the application db or published tables. 
 
-## dbt Responsibilities
-
-dbt begins after publication.
-
-Examples:
-
-- cleaning
-- standardization
-- joins
-- dimensional models
-- KPIs
-- reporting marts
-
-No ingestion logic belongs in dbt.
+Assume the publishing credentials are a restricted service account with write-only access to the configured schemas. 
 
 ## Deliverables
 
 ### Runtime Artifacts
 
-- alchemer_refresh.R
+- alchemer_refresh.
+- example Renviron file for configuration
 - alchemer.duckdb
 - logs directory
 
@@ -323,10 +311,9 @@ Scheduled execution:
 - Single R script implementation.
 - Keyring for credentials.
 - Alchemer API extraction.
-- ODBC publication to SQL Server.
+- Optional ODBC publication to SQL Server.
 - Survey-level full refreshes.
 - No row-level watermarks.
 - One published table per survey.
 - Shared metadata tables for interpretation.
 - Preserve all analyst-relevant API content.
-- dbt performs downstream transformation only.
