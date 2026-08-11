@@ -33,8 +33,7 @@ SQL Server is the system of record for analytics consumption.
 ## Technology Stack
 
 ### R
-
-Single scheduled R script.
+All R code. Minimal LOC to achieve the end goals in production quality, auditable, and maintainable tool. Reliability is a requirement. Maintainable is a requirement. The scope is intentionally narrow to keep the project simple. Keep existing package functions available to R users who may want to pull data directly from Alchemer in their scrips, bit they should be audited and refactored where necissary to meet this spec.
 
 Responsibilities:
 
@@ -292,6 +291,7 @@ Assume the publishing credentials are a restricted service account with write-on
 - example Renviron file for configuration
 - alchemer.duckdb
 - logs directory
+- documentation explaining usage.
 
 ### Runtime Behaviour
 
