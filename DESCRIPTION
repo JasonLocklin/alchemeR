@@ -20,9 +20,10 @@ Imports:
     glue,
     httr2 (>= 1.0.0),
     jsonlite,
+    lifecycle,
     purrr,
     rlang,
-    tidyr,
+    tibble,
     utils
 Suggests:
     httptest2,

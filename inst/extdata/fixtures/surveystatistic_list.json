@@ -1,0 +1,17 @@
+{
+  "result_ok": true,
+  "total_count": 3,
+  "page": 1,
+  "total_pages": 1,
+  "results_per_page": 3,
+  "data": [
+    {"id": 2, "type": "TEXTBOX"},
+    {"id": 26, "type": "RADIO",
+      "breakdown": [
+        {"label": "Satisfied", "percentage": "66.7", "count": "2"},
+        {"label": "Unsatisfied", "percentage": "33.3", "count": "1"}
+      ],
+      "total responses": "3", "sum": "0", "average": "", "stdDev": null, "min": null, "max": null},
+    {"id": 82, "type": "HIDDEN"}
+  ]
+}

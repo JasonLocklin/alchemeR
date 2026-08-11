@@ -1,6 +1,4 @@
-test_client <- function() {
-  alchemer_client(token = "TOKEN", secret = "SECRET", domain = "api.alchemer.com", rpm = 100)
-}
+# test_client() is defined in helper-fixtures.R
 
 # --- URL construction (httptest2) -------------------------------------------
 

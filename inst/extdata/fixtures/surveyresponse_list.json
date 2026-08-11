@@ -1,0 +1,41 @@
+{
+  "result_ok": true,
+  "total_count": 2,
+  "page": 1,
+  "total_pages": 1,
+  "results_per_page": 2,
+  "data": [
+    {
+      "id": "121", "contact_id": "", "status": "Complete", "is_test_data": "0",
+      "date_submitted": "2025-12-09 17:15:37 EST", "date_updated": "2025-12-09 17:15:43",
+      "date_started": "2025-12-09 17:15:30 EST", "session_id": "1765318530_abc",
+      "language": "English", "link_id": "24839672", "url_variables": [],
+      "ip_address": "204.132.224.66", "referer": "https://app.alchemer.com/",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0)", "response_time": 6, "data_quality": [],
+      "longitude": "-105.01560211182", "latitude": "39.907299041748",
+      "country": "United States", "city": "Denver", "region": "CO", "postal": "80234", "dma": "751",
+      "survey_data": {
+        "2": {"id": 2, "type": "TEXTBOX", "question": "First Name", "section_id": 1, "answer": "Ian", "shown": true},
+        "26": {"id": 26, "type": "RADIO", "question": "How satisfied are you?", "section_id": 1, "answer": "Satisfied", "shown": true},
+        "82": {"id": 82, "type": "HIDDEN", "question": "teams_message", "section_id": 10, "answer": null, "shown": false}
+      }
+    },
+    {
+      "id": "122", "contact_id": "445", "status": "Complete", "is_test_data": "1",
+      "date_submitted": "2025-12-10 09:01:02 EST", "date_updated": "2025-12-10 09:05:11",
+      "date_started": "2025-12-10 08:58:00 EST", "session_id": "1765400000_def",
+      "language": "English", "link_id": "24839672",
+      "url_variables": {"utm_source": {"value": "newsletter"}},
+      "ip_address": "10.0.0.1", "referer": null,
+      "user_agent": "Mozilla/5.0 (Macintosh)", "response_time": 42,
+      "data_quality": {"opentext.gibberish": true},
+      "longitude": "-104.9", "latitude": "39.7",
+      "country": "United States", "city": "Denver", "region": "CO", "postal": "80202", "dma": "751",
+      "survey_data": {
+        "2": {"id": 2, "type": "TEXTBOX", "question": "First Name", "section_id": 1, "answer": "asdkjhaskjdh", "shown": true},
+        "26": {"id": 26, "type": "RADIO", "question": "How satisfied are you?", "section_id": 1, "answer": "Unsatisfied", "shown": true},
+        "82": {"id": 82, "type": "HIDDEN", "question": "teams_message", "section_id": 10, "answer": "ops-team", "shown": true}
+      }
+    }
+  ]
+}
