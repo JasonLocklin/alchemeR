@@ -72,6 +72,26 @@ test_that("pub_layer(language =) rejects a value that could break the generated 
   expect_error(pub_layer(dir, language = "en'glish"), class = "alchemeR_config_error")
 })
 
+test_that("a survey_id containing a quote character doesn't break wide-view management", {
+  # Regression test (ultrareview): drop_existing_wide_views() interpolated
+  # survey_id into a LIKE pattern with no SQL quoting at all, unlike every
+  # other use of survey_id in this file.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con, survey_id = "1'2", title = "Odd Id Survey")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir) # first run: creates the view
+  pub_layer(dir) # second run: must find and drop it again without erroring
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  views <- DBI::dbGetQuery(con2, "
+    SELECT table_name FROM information_schema.tables
+    WHERE table_catalog = 'alchemer' AND table_schema = 'pub' AND table_name LIKE 'wide\\_%' ESCAPE '\\'")$table_name
+  expect_equal(length(views), 1)
+})
+
 test_that("pub.answers reconciles against raw.responses.survey_data", {
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)

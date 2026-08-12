@@ -133,14 +133,29 @@ pivot_aliases <- function(question_ids, shortnames) {
   base
 }
 
+# Escapes a value for safe embedding inside a LIKE pattern: %, _, and \\
+# itself all need a \\ in front so they're matched literally rather than as
+# wildcards/the escape character.
+like_escape <- function(x) {
+  gsub("([%_\\\\])", "\\\\\\1", x)
+}
+
 drop_existing_wide_views <- function(con, survey_id) {
+  # Unlike every other use of survey_id in this file, this one used to
+  # interpolate it directly into the SQL string literal with no quoting at
+  # all -- a survey_id containing a quote character would break out of the
+  # literal. dbQuoteString() handles that; like_escape() separately handles
+  # survey_id containing a genuine LIKE wildcard character.
+  pattern <- paste0("wide\\_%\\_", like_escape(survey_id))
   existing <- DBI::dbGetQuery(con, glue::glue(
     "SELECT table_name FROM information_schema.tables
      WHERE table_catalog = '{ducklake_alias}' AND table_schema = 'pub'
-       AND table_name LIKE 'wide\\_%\\_{survey_id}' ESCAPE '\\'"
+       AND table_name LIKE {DBI::dbQuoteString(con, pattern)} ESCAPE '\\'"
   ))$table_name
   for (view in existing) {
-    DBI::dbExecute(con, glue::glue("DROP VIEW IF EXISTS {ducklake_alias}.pub.{view}"))
+    DBI::dbExecute(con, glue::glue(
+      "DROP VIEW IF EXISTS {ducklake_alias}.pub.{DBI::dbQuoteIdentifier(con, view)}"
+    ))
   }
 }
 
@@ -160,10 +175,15 @@ rebuild_wide_view <- function(con, survey_id, title) {
     DBI::dbQuoteString(con, questions$question_id), "AS", DBI::dbQuoteIdentifier(con, aliases),
     collapse = ", "
   )
+  # view_name becomes a raw SQL identifier below (a table/view name can't be
+  # a bind parameter), so it goes through dbQuoteIdentifier() even though
+  # survey_id is almost always numeric in practice -- raw.surveys.survey_id
+  # is untyped VARCHAR (ADR-003) and pub_layer(surveys = ) accepts whatever
+  # the caller passes.
   view_name <- paste0("wide_", slugify(title), "_", survey_id)
 
   DBI::dbExecute(con, glue::glue(
-    "CREATE VIEW {ducklake_alias}.pub.{view_name} AS
+    "CREATE VIEW {ducklake_alias}.pub.{DBI::dbQuoteIdentifier(con, view_name)} AS
      PIVOT (SELECT * FROM {ducklake_alias}.pub.answers WHERE survey_id = {DBI::dbQuoteString(con, survey_id)})
      ON question_id IN ({pivot_list})
      USING first(answer)
