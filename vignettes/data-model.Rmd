@@ -146,6 +146,38 @@ suffixing the question id onto the second one's column name.
 If you haven't run `pub_layer()` yet for a survey, `survey_wide(con,
 survey_id)` computes the same shape directly from `raw` on demand.
 
+### Timestamps in `pub` are America/Toronto wall-clock time
+
+Every timestamp column in `pub` -- `pub.surveys.created_on`/`modified_on`
+and `pub.responses.date_submitted`/`date_started`/`date_updated` -- is
+normalised to America/Toronto local time, so analysts never have to reason
+about mixed or ambiguous source timezones (see "Why full refresh, not
+incremental" above for the trouble `date_updated`'s ambiguity already
+causes elsewhere). Two source shapes get two different treatments:
+
+- **`date_submitted`/`date_started`** carry an explicit, per-row `EST` or
+  `EDT` suffix from Alchemer -- the exact Eastern-time abbreviation for
+  that date -- so `pub_layer()` parses each one into an unambiguous instant
+  using its own suffix, with no assumption of ours involved. Because
+  EST/EDT *are* Toronto's own standard/daylight offsets, the resulting
+  wall-clock value is numerically identical to what Alchemer sent; it is
+  simply parsed rigorously (via a real offset) rather than having its
+  suffix string-stripped.
+- **`date_updated`, and `pub.surveys.created_on`/`modified_on`** carry no
+  timezone suffix at all. Per Alchemer's own documentation (which speaks
+  only to `date_updated`; the survey-level fields aren't documented either
+  way) these are **assumed to be UTC** -- "typically UTC, but may vary by
+  account settings." `pub_layer()` extends that same assumption to the two
+  survey-level fields for consistency, since no better information is
+  available. **If your account's unsuffixed timestamps are not actually
+  UTC**, these three columns will be off by a fixed number of hours, not
+  scrambled or wrong-dated -- a predictable, correctable offset, not silent
+  data corruption. `raw.responses.date_updated` (verbatim, unconverted)
+  remains available if you need to work around this for a specific account.
+
+`raw` itself is untouched by any of this (ADR-003): every `raw` timestamp
+stays exactly as Alchemer sent it, string and all.
+
 ## Regional API domains
 
 Set `ALCHEMER_DOMAIN` to match your account's region -- calling the wrong

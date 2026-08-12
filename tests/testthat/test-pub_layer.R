@@ -60,6 +60,56 @@ test_that("pub_layer builds typed surveys/questions/options/responses/answers", 
   expect_equal(nrow(answers), 4) # 2 responses x 2 questions
 })
 
+test_that("date_submitted/date_started convert their EST/EDT suffix to identical Toronto wall-clock time", {
+  # EST/EDT *are* Toronto's own standard/daylight offsets, so a properly
+  # parsed EST/EDT-suffixed timestamp should land at the same wall-clock
+  # value in America/Toronto -- winter (EST) and summer (EDT) both checked,
+  # since a naive fixed-offset assumption would get one of the two wrong.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+    (survey_id, response_id, date_submitted, date_started, is_deleted) VALUES
+    ('1', 'winter', '2026-01-15 14:30:00 EST', '2026-01-15 14:25:00 EST', FALSE),
+    ('1', 'summer', '2026-07-15 14:30:00 EDT', '2026-07-15 14:25:00 EDT', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  responses <- DBI::dbGetQuery(con2, "
+    SELECT response_id, date_submitted, date_started FROM alchemer.pub.responses ORDER BY response_id")
+  expect_equal(format(responses$date_submitted[responses$response_id == "winter"]), "2026-01-15 14:30:00")
+  expect_equal(format(responses$date_submitted[responses$response_id == "summer"]), "2026-07-15 14:30:00")
+  expect_equal(format(responses$date_started[responses$response_id == "winter"]), "2026-01-15 14:25:00")
+})
+
+test_that("date_updated/created_on/modified_on convert their assumed-UTC value to Toronto wall-clock time", {
+  # No suffix at all on these three, so they're assumed UTC and shifted --
+  # -5h in winter (EST), -4h in summer (EDT) -- rather than left naive.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys
+    (survey_id, title, created_on, modified_on, is_deleted) VALUES
+    ('1', 'S', '2026-01-15 19:00:00', '2026-07-15 18:00:00', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+    (survey_id, response_id, date_updated, is_deleted) VALUES
+    ('1', 'r1', '2026-01-15 19:00:00', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  surveys <- DBI::dbGetQuery(con2, "SELECT created_on, modified_on FROM alchemer.pub.surveys")
+  expect_equal(format(surveys$created_on), "2026-01-15 14:00:00") # UTC-5 (EST)
+  expect_equal(format(surveys$modified_on), "2026-07-15 14:00:00") # UTC-4 (EDT)
+
+  responses <- DBI::dbGetQuery(con2, "SELECT date_updated FROM alchemer.pub.responses")
+  expect_equal(format(responses$date_updated), "2026-01-15 14:00:00")
+})
+
 test_that("INSERT ... BY NAME rejects a column-name mismatch instead of silently misrouting", {
   # Regression test (ultrareview): pub_table_columns existed as the same
   # column-order-safety mechanism used for raw_table_columns/

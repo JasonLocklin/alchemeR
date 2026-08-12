@@ -35,3 +35,15 @@ alone, incremental by survey, and safe to re-run (ADR-008) -- it does not
 need archival-grade fidelity, so this is where judgement calls (typing,
 language selection, reporting-value joins) belong instead of in \code{ingest()}.
 }
+\details{
+Every timestamp in \code{pub} (\code{pub.surveys.created_on}/\code{modified_on},
+\code{pub.responses.date_submitted}/\code{date_started}/\code{date_updated}) is
+normalised to America/Toronto wall-clock time, matching this package's
+userbase. \code{date_submitted}/\code{date_started} carry an explicit per-row
+EST/EDT suffix from Alchemer and convert exactly; \code{date_updated} and the
+two survey-level fields carry no timezone suffix at all and are assumed
+UTC (Alchemer's own documented default for \code{date_updated}, extended here
+to the other two for consistency) -- an account where that assumption
+doesn't hold would see those three columns off by a fixed number of
+hours, not scrambled or wrong-dated. See \code{vignette("data-model")}.
+}
