@@ -1,0 +1,196 @@
+seed_survey <- function(con, survey_id = "1", title = "Q1 Customer Feedback") {
+  qs <- function(x) DBI::dbQuoteString(con, x)
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.surveys (survey_id, title, type, status, created_on, modified_on, team, is_deleted)
+     VALUES ({qs(survey_id)}, {qs(title)}, 'Standard Survey', 'Launched',
+             '2026-01-01 00:00:00', '2026-01-01 00:00:00', '1', FALSE)"
+  ))
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.survey_questions
+       (survey_id, question_id, base_type, type, title, shortname, question_order)
+     VALUES
+       ({qs(survey_id)}, '2', 'Question', 'TEXTBOX', '{{\"English\":\"First Name\"}}', 'First Name', 1),
+       ({qs(survey_id)}, '26', 'Question', 'RADIO', '{{\"English\":\"How satisfied are you?\"}}', 'Satisfaction', 2)"
+  ))
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.survey_question_options
+       (survey_id, question_id, option_id, title, value, option_order)
+     VALUES
+       ({qs(survey_id)}, '26', '10001', '{{\"English\":\"Satisfied\"}}', 'Satisfied', 1),
+       ({qs(survey_id)}, '26', '10002', '{{\"English\":\"Unsatisfied\"}}', 'Unsatisfied', 2)"
+  ))
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.responses
+       (survey_id, response_id, status, is_test_data, date_submitted, date_updated, survey_data, is_deleted)
+     VALUES
+       ({qs(survey_id)}, 'r1', 'Complete', '0', '2026-01-01 10:00:00 EST', '2026-01-01 10:00:05',
+        '{{\"2\":{{\"id\":2,\"answer\":\"Ian\",\"shown\":true}},\"26\":{{\"id\":26,\"answer\":\"Satisfied\",\"shown\":true}}}}', FALSE),
+       ({qs(survey_id)}, 'r2', 'Complete', '0', '2026-01-01 11:00:00 EST', '2026-01-01 11:00:05',
+        '{{\"2\":{{\"id\":2,\"answer\":\"Ana\",\"shown\":true}},\"26\":{{\"id\":26,\"answer\":\"Unsatisfied\",\"shown\":true}}}}', FALSE)"
+  ))
+}
+
+test_that("pub_layer builds typed surveys/questions/options/responses/answers", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+
+  surveys <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.surveys")
+  expect_equal(surveys$title, "Q1 Customer Feedback")
+  expect_true(inherits(surveys$created_on, c("POSIXct", "POSIXt")) || is.character(surveys$created_on))
+
+  responses <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.responses ORDER BY response_id")
+  expect_equal(nrow(responses), 2)
+  expect_type(responses$is_test_data, "logical")
+  expect_false(any(responses$is_test_data))
+
+  answers <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.answers")
+  expect_equal(nrow(answers), 4) # 2 responses x 2 questions
+})
+
+test_that("pub.answers reconciles against raw.responses.survey_data", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  n_survey_data_keys <- DBI::dbGetQuery(con, "
+    SELECT SUM(len) AS n FROM (
+      SELECT list_count(json_keys(survey_data)) AS len FROM alchemer.raw.responses
+    )")$n
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  n_answers <- DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n
+  expect_equal(n_answers, n_survey_data_keys)
+})
+
+test_that("pub.answers resolves reporting_value and option_id for coded answers", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  answers <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.answers WHERE question_id = '26' ORDER BY response_id")
+  expect_equal(answers$option_id, c("10001", "10002"))
+  expect_equal(answers$reporting_value, c("Satisfied", "Unsatisfied"))
+})
+
+test_that("the wide view round-trips to the same data as pub.answers (long)", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  wide <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.wide_q1_customer_feedback_1 ORDER BY response_id")
+  expect_equal(wide$response_id, c("r1", "r2"))
+  expect_equal(wide$first_name, c("Ian", "Ana"))
+  expect_equal(wide$satisfaction, c("Satisfied", "Unsatisfied"))
+})
+
+test_that("pub_layer regenerates the wide view when a question is added", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "
+    INSERT INTO alchemer.raw.survey_questions (survey_id, question_id, base_type, type, title, shortname, question_order)
+    VALUES ('1', '99', 'Question', 'TEXTBOX', '{\"English\":\"Last Name\"}', 'Last Name', 3)")
+  DBI::dbExecute(con, "
+    UPDATE alchemer.raw.responses SET survey_data = json_merge_patch(survey_data, '{\"99\":{\"id\":99,\"answer\":\"Smith\",\"shown\":true}}')
+    WHERE response_id = 'r1'")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  wide <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.wide_q1_customer_feedback_1 ORDER BY response_id")
+  expect_true("last_name" %in% names(wide))
+  expect_equal(wide$last_name[wide$response_id == "r1"], "Smith")
+})
+
+test_that("pub_layer drops a survey's stale wide view when its title changes", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "UPDATE alchemer.raw.surveys SET title = 'Renamed Survey' WHERE survey_id = '1'")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  views <- DBI::dbGetQuery(con2, "
+    SELECT table_name FROM information_schema.tables
+    WHERE table_catalog = 'alchemer' AND table_schema = 'pub' AND table_name LIKE 'wide\\_%\\_1' ESCAPE '\\'")$table_name
+  expect_equal(views, "wide_renamed_survey_1")
+})
+
+test_that("test and deleted responses are flagged, not dropped, in pub.responses/answers", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbExecute(con, "UPDATE alchemer.raw.responses SET is_test_data = '1' WHERE response_id = 'r1'")
+  DBI::dbExecute(con, "UPDATE alchemer.raw.responses SET is_deleted = TRUE, deleted_detected_at = now() WHERE response_id = 'r2'")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir)
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  responses <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.pub.responses ORDER BY response_id")
+  expect_equal(nrow(responses), 2) # both still present
+  expect_true(responses$is_test_data[responses$response_id == "r1"])
+  expect_true(responses$is_deleted[responses$response_id == "r2"])
+  answers <- DBI::dbGetQuery(con2, "SELECT is_deleted FROM alchemer.pub.answers WHERE response_id = 'r2'")
+  expect_true(all(answers$is_deleted))
+})
+
+test_that("survey_wide() pivots directly from raw for a survey not run through pub_layer()", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+
+  out <- survey_wide(con, "1")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(nrow(out), 2)
+  expect_true(all(c("first_name", "satisfaction") %in% names(out)))
+})
+
+test_that("pub_layer(surveys = ) rebuilds only the requested survey", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con, "1", "Survey One")
+  seed_survey(con, "2", "Survey Two")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir, surveys = "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.surveys")$n, 1)
+  expect_equal(DBI::dbGetQuery(con2, "SELECT survey_id FROM alchemer.pub.surveys")$survey_id, "1")
+})

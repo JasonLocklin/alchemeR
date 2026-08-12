@@ -23,9 +23,10 @@ always refreshed regardless of change detection.}
 
 \item{force}{Refresh every survey regardless of change detection.}
 
-\item{include}{Which optional per-survey data to fetch. \code{"campaigns"} and
-\code{"statistics"} are included by default; add \code{"contacts"} to opt into
-contact data (heavy PII, ADR-009) -- not yet implemented.}
+\item{include}{Which optional per-survey data to fetch: any of
+\code{"campaigns"} and \code{"statistics"}, both on by default. Contacts (heavy
+PII, ADR-009) are account-level rather than per-survey and are not
+fetched by \code{ingest()} at all yet.}
 
 \item{full_sweep_days}{Maximum days since a survey's last successful
 refresh before it is refreshed regardless of change detection --

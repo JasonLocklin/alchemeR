@@ -72,6 +72,30 @@ meta_tables <- list(
   schema_version = "version INTEGER"
 )
 
+# Typed, language-resolved (ADR-008); built by pub_layer(), never by
+# ingest(). Unlike raw/meta, this schema has no fixed table set the way
+# raw/meta do beyond these five -- pub_layer() only ever writes here.
+pub_tables <- list(
+  surveys = "
+    survey_id VARCHAR, title VARCHAR, type VARCHAR, status VARCHAR,
+    created_on TIMESTAMP, modified_on TIMESTAMP, team VARCHAR, is_deleted BOOLEAN",
+  questions = "
+    survey_id VARCHAR, question_id VARCHAR, page_id VARCHAR, type VARCHAR,
+    title VARCHAR, shortname VARCHAR, varname VARCHAR, question_order INTEGER",
+  options = "
+    survey_id VARCHAR, question_id VARCHAR, option_id VARCHAR, title VARCHAR,
+    value VARCHAR, option_order INTEGER",
+  responses = "
+    survey_id VARCHAR, response_id VARCHAR, status VARCHAR, is_test_data BOOLEAN,
+    date_submitted TIMESTAMP, date_started TIMESTAMP, date_updated TIMESTAMP,
+    session_id VARCHAR, language VARCHAR, link_id VARCHAR, contact_id VARCHAR,
+    response_time INTEGER, is_deleted BOOLEAN",
+  answers = "
+    survey_id VARCHAR, response_id VARCHAR, question_id VARCHAR,
+    question_shortname VARCHAR, question_title VARCHAR, option_id VARCHAR,
+    answer VARCHAR, reporting_value VARCHAR, shown BOOLEAN, is_deleted BOOLEAN"
+)
+
 # Exact column order for each raw.*/meta.* table, parsed once from the DDL
 # above. ingest() uses this to reorder/validate a tibble before writing it,
 # since the INSERT ... SELECT * FROM <registered data.frame> pattern maps
@@ -88,6 +112,7 @@ table_columns <- function(ddl) {
 }
 raw_table_columns <- lapply(raw_tables, table_columns)
 meta_table_columns <- lapply(meta_tables, table_columns)
+pub_table_columns <- lapply(pub_tables, table_columns)
 
 create_tables <- function(con, schema, tables) {
   DBI::dbExecute(con, glue::glue("CREATE SCHEMA IF NOT EXISTS {ducklake_alias}.{schema}"))
@@ -104,7 +129,7 @@ create_tables <- function(con, schema, tables) {
 ensure_schema <- function(con) {
   create_tables(con, "raw", raw_tables)
   create_tables(con, "meta", meta_tables)
-  DBI::dbExecute(con, glue::glue("CREATE SCHEMA IF NOT EXISTS {ducklake_alias}.pub"))
+  create_tables(con, "pub", pub_tables)
 
   current <- DBI::dbGetQuery(
     con,
