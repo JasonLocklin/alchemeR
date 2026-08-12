@@ -26,9 +26,13 @@ probe_survey <- function(client, survey_id) {
       class = "alchemeR_api_result_error", call = NULL
     )
   }
+  # body$data is an empty list for a survey with zero responses --
+  # body$data[[1]] on that is "subscript out of bounds", not a missing
+  # field, so it must be guarded explicitly rather than relying on %||%.
+  newest <- if (length(body$data) > 0) body$data[[1]] else NULL
   list(
     total_count = as.integer(body$total_count %||% 0L),
-    max_date_updated = chr1(body$data[[1]]$date_updated %||% NA)
+    max_date_updated = chr1(newest$date_updated %||% NA)
   )
 }
 

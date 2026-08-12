@@ -6,6 +6,19 @@ new_state <- function() {
   list(surveys = list(), responses = list(), definitions = list())
 }
 
+test_that("probe_survey handles a zero-response survey without crashing", {
+  # Regression test (ultrareview): body$data[[1]] on an empty `data` array
+  # (a survey with zero responses) threw "subscript out of bounds", masked
+  # by ingest()'s outer tryCatch but permanently defeating change detection
+  # for that survey (it always fell back to "probe failed; refresh anyway").
+  httr2::local_mocked_responses(list(httr2::response_json(status_code = 200, body = list(
+    result_ok = TRUE, total_count = 0, page = 1, total_pages = 1, data = list()
+  ))))
+  out <- probe_survey(ingest_test_client(), "1")
+  expect_equal(out$total_count, 0L)
+  expect_true(is.na(out$max_date_updated))
+})
+
 test_that("decide_refresh: never-refreshed surveys always refresh", {
   out <- decide_refresh(NULL, "2026-01-01", list(total_count = 0, max_date_updated = NA), FALSE, 90)
   expect_true(out$refresh)
@@ -66,6 +79,26 @@ test_that("cold run populates surveys, definitions, questions, and responses", {
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 2)
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.survey_state")$n, 1)
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.runs")$n, 1)
+})
+
+test_that("a zero-response survey's change detection works instead of always force-refreshing", {
+  # Regression test (ultrareview): before the probe_survey() fix above, a
+  # zero-response survey's probe always threw internally, was caught by
+  # ingest()'s outer tryCatch, and fell back to "refresh anyway" on every
+  # run -- change detection never actually engaged for it.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list())
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  out2 <- ingest(db = dir, client = ingest_test_client())
+
+  expect_equal(out2$status, "skipped")
+  expect_match(out2$decision, "no change")
 })
 
 test_that("an immediate second run refreshes nothing (idempotence)", {
