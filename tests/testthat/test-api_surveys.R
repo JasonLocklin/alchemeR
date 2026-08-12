@@ -37,19 +37,17 @@ test_that("alchemer_responses returns one row per response, including edge cases
 })
 
 test_that("alchemer_responses passes extra query parameters through, e.g. order_by", {
-  httptest2::without_internet({
-    req <- alchemer_request(
-      test_client(), "survey/8611799/surveyresponse",
-      query = list(order_by = "-date_updated")
-    )
-    httptest2::expect_GET(
-      httr2::req_perform(req),
-      paste0(
-        "https://api.alchemer.com/v5/survey/8611799/surveyresponse?",
-        "api_token=TOKEN&api_token_secret=SECRET&order_by=-date_updated"
-      )
-    )
+  # Exercises alchemer_responses()'s own `...` -> query = list(...) threading
+  # (api_surveys.R), not just alchemer_request()'s generic query merging
+  # (already covered in test-api.R) -- a prior version of this test called
+  # alchemer_request() directly and never touched alchemer_responses() at all.
+  sent_url <- NULL
+  httr2::local_mocked_responses(function(req) {
+    sent_url <<- req$url
+    fixture_response("surveyresponse_list.json")
   })
+  alchemer_responses("8611799", test_client(), order_by = "-date_updated")
+  expect_true(grepl("order_by=-date_updated", sent_url, fixed = TRUE))
 })
 
 test_that("alchemer_campaigns returns a tibble", {

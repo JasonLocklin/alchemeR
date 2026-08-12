@@ -76,11 +76,47 @@ test_that("load_pipeline_health writes a monitorable status row", {
   expect_true("checked_at" %in% names(loaded))
 })
 
+# A DBI connection wrapper that delegates writes to a real connection but
+# throws if any read (dbSendQuery, which DBI's default dbGetQuery()/
+# dbReadTable() both delegate through) is issued against it -- a genuine
+# runtime check of the write-only claim in load.R's file comment, unlike a
+# source-text grep for "dest_con"/"dbWriteTable" (which a harmless refactor,
+# e.g. renaming the parameter or adding an unrelated dbExistsTable() call,
+# could pass or fail for reasons unrelated to the actual guarantee).
+methods::setClass(
+  "WriteOnlyConnection",
+  contains = "DBIConnection",
+  representation(inner = "ANY")
+)
+# setMethod() is given the generic *function object* (DBI::dbWriteTable, not
+# the bare string "dbWriteTable") because alchemeR fully-qualifies every DBI
+# call rather than importing the package, so the generic isn't otherwise
+# resolvable from this scope.
+methods::setMethod(DBI::dbWriteTable, "WriteOnlyConnection", function(conn, name, value, ...) {
+  DBI::dbWriteTable(conn@inner, name, value, ...)
+})
+methods::setMethod(DBI::dbExistsTable, "WriteOnlyConnection", function(conn, name, ...) {
+  DBI::dbExistsTable(conn@inner, name, ...)
+})
+methods::setMethod(DBI::dbIsValid, "WriteOnlyConnection", function(dbObj, ...) DBI::dbIsValid(dbObj@inner, ...))
+methods::setMethod(DBI::dbDisconnect, "WriteOnlyConnection", function(conn, ...) DBI::dbDisconnect(conn@inner, ...))
+methods::setMethod(DBI::dbSendQuery, "WriteOnlyConnection", function(conn, statement, ...) {
+  stop("a SELECT was issued against a write-only destination connection: ", statement)
+})
+
 test_that("load functions never issue a SELECT against the destination (write-only by design)", {
-  # Structural check on the write-only claim in load.R's file comment: the
-  # only calls made against dest_con are dbWriteTable() (create/insert).
-  src <- c(deparse(body(load_pub_layer)), deparse(body(load_pipeline_health)), deparse(body(destination_name)))
-  dest_calls <- grep("dest_con", src, value = TRUE)
-  expect_true(length(dest_calls) > 0)
-  expect_true(all(grepl("dbWriteTable", dest_calls)))
+  dir <- withr::local_tempdir()
+  seed_pub_layer(dir)
+
+  real <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  dest <- methods::new("WriteOnlyConnection", inner = real)
+  on.exit(DBI::dbDisconnect(dest))
+
+  load_pub_layer(dest, dir) # would throw if it ever read from dest
+  load_pipeline_health(dest, dir) # would throw if it ever read from dest
+
+  # sanity check: the wrapper's error path genuinely fires for a real SELECT,
+  # so a silently-broken wrapper (e.g. dbSendQuery never dispatching) can't
+  # make this test pass vacuously.
+  expect_error(DBI::dbGetQuery(dest, "SELECT 1"))
 })
