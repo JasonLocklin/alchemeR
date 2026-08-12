@@ -1,0 +1,32 @@
+# Copy this file to .Renviron (project-level) or ~/.Renviron (user-level) and
+# fill in your values. alchemeR never accepts credentials as bare function
+# arguments in a way that would end up committed to project source -- every
+# setting below is read from the environment (or, for the API secret, may be
+# supplied at runtime via keyring instead; see vignette("scheduling")).
+
+# Required
+ALCHEMER_API_TOKEN=
+ALCHEMER_API_SECRET=
+
+# Required for ingest()/pub_layer()/alchemer_db() and friends: the directory
+# that will hold catalog.ducklake and data/. Use an absolute path for a
+# scheduled job, since its working directory is not guaranteed.
+ALCHEMER_DB=
+
+# Optional -- defaults shown
+# Regional API base domain. See https://apihelp.alchemer.com/help/api-base-domains
+#   United States: api.alchemer.com (default)
+#   European Union: api.alchemer.eu
+#   Canada:         api.alchemer-ca.com
+#   Australia:      api.au.alchemer.com
+ALCHEMER_DOMAIN=api.alchemer.com
+
+# Request-per-minute throttle ceiling. The documented account-wide limit is
+# 240/min; the default here leaves headroom for interactive use of the same
+# account while ingest() runs.
+ALCHEMER_RPM=100
+
+# Maximum days since a survey's last successful refresh before ingest()
+# refreshes it regardless of change detection -- a correctness backstop, not
+# a freshness setting. Lower it for accounts with edit-heavy closed surveys.
+ALCHEMER_FULL_SWEEP_DAYS=90

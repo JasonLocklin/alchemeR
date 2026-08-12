@@ -1,0 +1,158 @@
+---
+title: "The data model"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The data model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## The application database
+
+`ALCHEMER_DB` points at a directory holding two things:
+
+```
+$ALCHEMER_DB/
+  catalog.ducklake      # the DuckLake catalog -- an ordinary DuckDB file
+  data/                  # Parquet data files, written and compacted by DuckDB
+```
+
+It's a [DuckLake](https://ducklake.select/) database: Parquet files for
+data, plus a small DuckDB file that tracks table structure, snapshots, and
+where every row lives. `alchemer_db()` attaches it, under the fixed alias
+`alchemer`, as three schemas: `raw`, `meta`, and `pub`.
+
+Only one process may hold the catalog open for writing at a time. If
+another `ingest()` (or any `alchemer_db()` call) is already running,
+opening it again fails immediately with a message naming the file, rather
+than hanging.
+
+## `raw`: archival, verbatim, untyped
+
+Every column in `raw` is `VARCHAR` or `JSON` -- there's no coercion,
+renaming, or language selection at ingest time. Alchemer's own typing is
+inconsistent enough (`is_test_data` as the string `"1"`/`"0"`, titles as
+`{"English": "..."}` maps, the literal statistics key `"total responses"`
+with a space) that doing any of that at ingest would let a new question
+type or a changed representation fail the whole ingest, or worse, silently
+mangle data. Every table also carries a `payload` column holding the
+source API object close to verbatim (minus the redactions below), so
+nothing this package doesn't model explicitly is ever lost.
+
+| Table | Grain |
+|---|---|
+| `raw.surveys` | one row per survey |
+| `raw.survey_definitions` | one row per survey -- the whole definition tree, verbatim |
+| `raw.survey_pages`, `raw.survey_questions`, `raw.survey_question_options` | flattened from that tree |
+| `raw.responses` | one row per response; answers verbatim in `survey_data` |
+| `raw.survey_statistics`, `raw.survey_campaigns` | one row per question / campaign |
+
+### What's never stored
+
+- **File-upload attachment bytes.** The answer value and Alchemer filename
+  are kept, but the bytes themselves are not downloaded, and the pre-signed
+  download URL (which expires) is not chased. If you need attachments
+  preserved, fetch them yourself while the Alchemer account still exists.
+- **Respondent IP address, latitude/longitude, city, region, postal code,
+  DMA, and user agent** are redacted at ingest, including inside `payload`.
+- **Contacts** are not fetched by `ingest()` (see `?ingest`); they carry
+  heavy PII (names, emails, phone numbers) that most uses of this package
+  don't need.
+
+## History: DuckLake snapshots, not a hand-rolled archive
+
+There's no separate versioned/archival layer -- DuckLake already versions
+every write. Query the database as it stood at a past time or version
+directly:
+
+```{r}
+con <- alchemer_db()
+dplyr::tbl(con, I("alchemer.raw.responses")) # current state
+
+DBI::dbGetQuery(con, "
+  SELECT * FROM alchemer.raw.responses AT (TIMESTAMP => '2026-01-01 00:00:00')
+")
+DBI::dbGetQuery(con, "SELECT * FROM ducklake_snapshots('alchemer')") # every commit
+```
+
+**History depth and retention are the same knob.** `expire_history(db,
+older_than)` trims how far back time travel can reach (and reclaims the
+files that held that history); after that, querying an expired version
+fails cleanly rather than returning wrong data. `expunge()` goes further --
+it deletes rows and expires their history together, for data that must
+actually leave the database, not just become hard to find.
+
+## Deletions are flagged, never dropped
+
+Alchemer's list endpoints silently exclude deleted responses -- there's no
+tombstone to detect a deletion from a single request. Instead, every
+`ingest()` refresh downloads **all** of a survey's responses and compares
+that set to what's already stored: anything previously stored but now
+missing from the fetch is flagged `is_deleted = TRUE` and
+`deleted_detected_at` is set, never removed. The same happens to a survey
+that disappears from account-level discovery. Once flagged, a row stays
+flagged unless the API returns it again. Filter deleted rows in or out as
+your analysis needs.
+
+## Why full refresh, not incremental
+
+`ingest()` always downloads **every** response for a survey it decides to
+refresh -- never a filtered subset. An incremental approach keyed on
+`date_updated` was considered and rejected: that field carries no timezone
+suffix (Alchemer's own docs call it "typically UTC, but may vary by account
+settings"), newly submitted data can take up to five minutes to become
+visible via the API, identical requests are cached for 60 seconds, and
+deleted responses are silently excluded from list results regardless. Any
+one of those can make an incremental delta miss a row permanently, with
+nothing downstream able to notice or reconcile it.
+
+Under full refresh, every one of those failure modes degrades only to "this
+survey refreshes later than ideal," and self-heals the next time it runs.
+`date_updated`, the survey list's `modified_on`, and a per-survey response
+count are still used, but only as hints for **when** a survey is worth
+refreshing -- they are never used to decide **which rows** to keep. A wrong
+hint costs freshness, bounded by `full_sweep_days`; it can't cost
+correctness.
+
+## `pub`: typed, for ordinary analysis
+
+`pub_layer()` builds typed, English-resolved (or `language = `-resolved)
+tables from `raw` alone -- it's rebuildable, incremental by survey, and
+safe to re-run, since it doesn't need archival-grade fidelity the way `raw`
+does.
+
+| Table | Grain | Notes |
+|---|---|---|
+| `pub.surveys`, `pub.questions`, `pub.options` | one row per entity | typed, language-resolved titles |
+| `pub.responses` | one row per response | typed timestamps/booleans; test/deleted rows flagged, not dropped |
+| `pub.answers` | one row per response x question | question/option labels and reporting values denormalised in |
+| `pub.wide_<slug>_<survey_id>` | one row per respondent | a generated view, one per survey |
+
+The wide view's name comes from a lowercased, underscore-separated,
+ASCII-transliterated survey title plus the survey id, e.g.
+`pub.wide_q1_customer_feedback_8611799` -- the id keeps it unique and gives
+a stable join back to `pub.surveys` even after a rename (each
+`pub_layer()` run drops a survey's old wide view before creating the
+current one). Two questions with the same `shortname` get disambiguated by
+suffixing the question id onto the second one's column name.
+
+If you haven't run `pub_layer()` yet for a survey, `survey_wide(con,
+survey_id)` computes the same shape directly from `raw` on demand.
+
+## Regional API domains
+
+Set `ALCHEMER_DOMAIN` to match your account's region -- calling the wrong
+one is, per Alchemer's documentation, one of the most common causes of
+failed API calls, and fails in confusing ways (login errors, empty
+responses, timeouts) rather than a clear "wrong domain" message.
+
+| Region | Domain |
+|---|---|
+| United States | `api.alchemer.com` (default) |
+| European Union | `api.alchemer.eu` |
+| Canada | `api.alchemer-ca.com` |
+| Australia | `api.au.alchemer.com` |

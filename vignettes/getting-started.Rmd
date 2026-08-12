@@ -1,0 +1,93 @@
+---
+title: "Getting started"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## Configure credentials
+
+alchemeR reads everything from the environment, never from arguments in your
+project source. Copy `system.file("extdata", "Renviron.example", package = "alchemeR")`
+to `.Renviron` (project) or `~/.Renviron` (user), and fill in your token and secret
+from **Account > Integrations > API Key**:
+
+```
+ALCHEMER_API_TOKEN=...
+ALCHEMER_API_SECRET=...
+ALCHEMER_DB=~/alchemer-db
+```
+
+Restart R (or call `readRenviron(".Renviron")`) so the variables are picked up.
+
+If your account is outside the US, also set `ALCHEMER_DOMAIN` -- see
+`vignette("data-model")` for the regional domain list. Getting this wrong is,
+per Alchemer's own documentation, one of the most common causes of failed API
+calls.
+
+## First run: a dry run, then one small survey
+
+`ingest()` downloads your **whole** account on a cold run, which can mean a lot
+of requests if you have a large or very active account. Before running it for
+real, see what it *would* do:
+
+```{r}
+library(alchemeR)
+
+ingest(dry_run = TRUE)
+```
+
+This makes the same discovery and probe requests as a real run, but writes
+nothing. Once you're comfortable with the plan, try one small survey first:
+
+```{r}
+ingest(surveys = "YOUR_SMALL_SURVEY_ID")
+```
+
+Then check what landed:
+
+```{r}
+db_status()
+db_check()
+```
+
+`db_status()` summarises survey/response counts and the most recent run.
+`db_check()` runs the integrity assertions `ingest()` already ran after that
+survey's commit -- useful confirmation that nothing is broken before trusting
+the database with everything.
+
+## The real thing
+
+```{r}
+ingest()      # every survey in the account
+pub_layer()   # typed tables + a wide view per survey
+```
+
+Subsequent calls to `ingest()` only refresh surveys that have actually
+changed (or that haven't been refreshed successfully in a while -- see
+`vignette("data-model")` for exactly how that's decided), so it's safe to run
+on a schedule. See `vignette("scheduling")` for that.
+
+## Using the data
+
+```{r}
+con <- alchemer_db()
+
+# Tidy, typed, one row per response x question:
+dplyr::collect(alchemer_tbl(con, "pub.answers"))
+
+# One row per respondent, the shape most analysts expect:
+survey_wide(con, "YOUR_SURVEY_ID")
+
+DBI::dbDisconnect(con, shutdown = TRUE)
+```
+
+If you haven't run `pub_layer()` for a survey yet (or its wide view is
+stale), `survey_wide()` computes the same shape directly from `raw` on
+demand -- no need to wait for the next `pub_layer()` run.

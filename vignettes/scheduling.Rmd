@@ -1,0 +1,85 @@
+---
+title: "Scheduling ingest()"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Scheduling ingest()}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+`ingest()` is designed to be run on a schedule: a cold run downloads
+everything, and every run after that only refreshes surveys that have
+actually changed (see `vignette("data-model")` for the exact rule), so
+running it frequently does not explode request volume, bandwidth, or
+storage.
+
+## The script
+
+`system.file("scripts", "ingest_job.R", package = "alchemeR")` is a
+copy-paste starting point: it calls `ingest()`, reports the outcome,
+builds the publication layer, and checks integrity. It reads all
+configuration from the environment, so the script itself has nothing
+account-specific to edit -- only the environment it runs in does.
+
+## Credentials for a non-interactive job
+
+A scheduled job can't type a password, so put credentials in the
+environment the job runs under, not in the script:
+
+- **`.Renviron`** (simplest): place a file with `ALCHEMER_API_TOKEN=...`
+  etc. either in the script's working directory or `~/.Renviron`; `Rscript`
+  reads it automatically the same way an interactive R session does.
+- **`keyring`**: for machines where you'd rather not leave a plaintext
+  secret on disk, store the secret in the OS keyring and read it into
+  `ALCHEMER_API_SECRET` (or pass it directly to functions that accept a
+  `secret`/`token` argument) at the top of your job script:
+
+  ```r
+  Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "secret"))
+  ```
+
+Either way, the application database path (`ALCHEMER_DB`) should be an
+**absolute** path -- a scheduled job's working directory is not guaranteed,
+and `alchemer_db()` normalises paths but can't guess one that was never
+given.
+
+## cron (Linux/macOS)
+
+```
+# Every 15 minutes
+*/15 * * * * Rscript /path/to/ingest_job.R >> /path/to/ingest.log 2>&1
+```
+
+Make sure the crontab's environment (or a `.Renviron` next to the script)
+actually has the required variables -- cron jobs run with a minimal
+environment, not your interactive shell's.
+
+## Task Scheduler (Windows)
+
+Create a Basic Task that runs `Rscript.exe path\to\ingest_job.R`, with
+"Start in" set to the script's directory (so a relative `.Renviron` there is
+found) or with `ALCHEMER_DB` set to an absolute path regardless.
+
+## Concurrency
+
+Only one process may hold the DuckLake catalog at a time (see
+`vignette("data-model")`). If a scheduled run overlaps a previous one that's
+still running, `alchemer_db()` fails fast with a message naming the
+catalog file, rather than hanging or corrupting anything -- schedule with
+enough headroom that this shouldn't happen under normal conditions, and
+treat it as a signal something upstream (a very large survey, a network
+stall) took longer than expected.
+
+## Offline / air-gapped installs
+
+The `ducklake` and `json` DuckDB extensions are downloaded on first use,
+which needs one-time network access. For an air-gapped deployment, run
+`alchemer_db()` once on a machine with network access -- this populates
+duckdb's shared extension cache, `~/.duckdb` by default (see
+`?duckdb::duckdb`, the `shared_home` argument) -- then copy that directory to
+the target machine, same path, same user. After that, `ingest()` never needs
+outbound access beyond the Alchemer API itself.

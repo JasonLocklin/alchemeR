@@ -4,13 +4,22 @@
 # alchemeR
 
 <!-- badges: start -->
-[![R](https://github.com/grousell/alchemeR/actions/workflows/r.yml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/r.yml)
+
+[![R-CMD-check](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-The goal of alchemeR is to provide tools to access Alchemer survey data
-from their API and pull into an R environment. More informtion on the
-Alchemer API and set up can be found here:
-<https://apihelp.alchemer.com/help>
+alchemeR downloads your whole [Alchemer](https://www.alchemer.com/)
+account into a local **DuckLake** application database, so analysis
+scripts stop depending on continued access to the Alchemer API.
+`ingest()` is safe to schedule: a first run downloads everything
+politely, and subsequent runs only refresh surveys that have actually
+changed. Once ingested, `pub_layer()` builds tidy, typed tables (and a
+one-row-per-respondent wide view per survey) for ordinary analysis.
+
+The package also still exposes direct-API functions for one-off use, and
+preserves the three functions from earlier releases as deprecated shims.
+See `vignette("data-model")` for the schema and
+`vignette("getting-started")` to begin.
 
 ## Installation
 
@@ -22,48 +31,42 @@ You can install the development version of alchemeR from
 devtools::install_github("grousell/alchemeR")
 ```
 
+## Configuration
+
+alchemeR reads credentials and settings from environment variables (see
+`inst/extdata/Renviron.example`), never from arguments in your script:
+
+``` r
+Sys.setenv(
+  ALCHEMER_API_TOKEN = "...",
+  ALCHEMER_API_SECRET = "...",
+  ALCHEMER_DB = "~/alchemer-db"
+)
+```
+
 ## Example
 
-### List of all surveys:
+### Ingest the account, then build the publication layer
 
 ``` r
 library(alchemeR)
 
-all_surveys(
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-  )
+ingest()      # first run: downloads everything; later runs only refresh changes
+pub_layer()   # typed tables + one wide view per survey
 ```
 
-### Download survey data:
-
-This function downloads a .csv into the working directory. The larger
-the data set, the longer the API call can take. This prevents the needs
-to constantly make an API call when conducting analyses.
-
-The `survey_name` argument can include folders. For example,
-`"data/survey_name"` will save the .csv in the data subfolder.
+### Query the application database
 
 ``` r
-library(alchemeR)
-
-fetch_survey(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret"),
-  "SURVEY_NAME"
-  )
-
-df <- read.csv("survey_data.csv")
+con <- alchemer_db()
+dplyr::collect(alchemer_tbl(con, "pub.responses"))
+survey_wide(con, "8611799")
+DBI::dbDisconnect(con, shutdown = TRUE)
 ```
 
-### Fetch survey data dictionary:
+### Direct API access, for one-off use
 
 ``` r
-
-survey_data_dictionary <- fetch_data_dictionary(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-)
+alchemer_surveys()
+alchemer_responses("8611799")
 ```
