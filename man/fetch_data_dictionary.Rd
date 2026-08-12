@@ -4,14 +4,14 @@
 \alias{fetch_data_dictionary}
 \title{Fetch an Alchemer survey's data dictionary}
 \usage{
-fetch_data_dictionary(survey_id, token = "token", secret_key = "secret_key")
+fetch_data_dictionary(survey_id, token = NULL, secret_key = NULL)
 }
 \arguments{
 \item{survey_id}{Alchemer survey number, retrieved from the survey URL.}
 
-\item{token}{Alchemer API token.}
+\item{token}{Alchemer API token. Defaults to \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key.}
+\item{secret_key}{Alchemer API secret key. Defaults to \code{ALCHEMER_API_SECRET}.}
 }
 \value{
 A tibble of question metadata.

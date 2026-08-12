@@ -12,11 +12,11 @@
 #' environment by default and returns the same tibble shape as every other
 #' direct-API function in this package.
 #'
-#' @param token Alchemer API token.
-#' @param secret_key Alchemer API secret key.
+#' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.
+#' @param secret_key Alchemer API secret key. Defaults to `ALCHEMER_API_SECRET`.
 #' @return A tibble with all Alchemer surveys.
 #' @export
-all_surveys <- function(token, secret_key) {
+all_surveys <- function(token = NULL, secret_key = NULL) {
   lifecycle::deprecate_warn("1.0.0", "all_surveys()", "alchemer_surveys()")
   alchemer_surveys(alchemer_client(token = token, secret = secret_key))
 }
@@ -30,13 +30,13 @@ all_surveys <- function(token, secret_key) {
 #' longer writes a CSV file unless `file` is supplied explicitly.
 #'
 #' @param survey_id Alchemer survey number, retrieved from the survey URL.
-#' @param token Alchemer API token.
-#' @param secret_key Alchemer API secret key.
+#' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.
+#' @param secret_key Alchemer API secret key. Defaults to `ALCHEMER_API_SECRET`.
 #' @param survey_name Unused; retained for signature compatibility.
 #' @param file If supplied, a path to write the responses to as a CSV.
 #' @return A tibble of survey responses, invisibly if `file` is supplied.
 #' @export
-fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key",
+fetch_survey <- function(survey_id, token = NULL, secret_key = NULL,
                          survey_name = "survey_data", file = NULL) {
   lifecycle::deprecate_warn("1.0.0", "fetch_survey()", "alchemer_responses()")
   df <- alchemer_responses(survey_id, alchemer_client(token = token, secret = secret_key))
@@ -63,11 +63,11 @@ fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key",
 #' Superseded by [alchemer_questions()].
 #'
 #' @param survey_id Alchemer survey number, retrieved from the survey URL.
-#' @param token Alchemer API token.
-#' @param secret_key Alchemer API secret key.
+#' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.
+#' @param secret_key Alchemer API secret key. Defaults to `ALCHEMER_API_SECRET`.
 #' @return A tibble of question metadata.
 #' @export
-fetch_data_dictionary <- function(survey_id, token = "token", secret_key = "secret_key") {
+fetch_data_dictionary <- function(survey_id, token = NULL, secret_key = NULL) {
   lifecycle::deprecate_warn("1.0.0", "fetch_data_dictionary()", "alchemer_questions()")
   alchemer_questions(survey_id, alchemer_client(token = token, secret = secret_key))
 }

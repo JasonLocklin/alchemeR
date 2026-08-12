@@ -6,8 +6,8 @@
 \usage{
 fetch_survey(
   survey_id,
-  token = "token",
-  secret_key = "secret_key",
+  token = NULL,
+  secret_key = NULL,
   survey_name = "survey_data",
   file = NULL
 )
@@ -15,9 +15,9 @@ fetch_survey(
 \arguments{
 \item{survey_id}{Alchemer survey number, retrieved from the survey URL.}
 
-\item{token}{Alchemer API token.}
+\item{token}{Alchemer API token. Defaults to \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key.}
+\item{secret_key}{Alchemer API secret key. Defaults to \code{ALCHEMER_API_SECRET}.}
 
 \item{survey_name}{Unused; retained for signature compatibility.}
 

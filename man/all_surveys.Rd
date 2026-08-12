@@ -4,12 +4,12 @@
 \alias{all_surveys}
 \title{Retrieve all surveys in Alchemer}
 \usage{
-all_surveys(token, secret_key)
+all_surveys(token = NULL, secret_key = NULL)
 }
 \arguments{
-\item{token}{Alchemer API token.}
+\item{token}{Alchemer API token. Defaults to \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key.}
+\item{secret_key}{Alchemer API secret key. Defaults to \code{ALCHEMER_API_SECRET}.}
 }
 \value{
 A tibble with all Alchemer surveys.
