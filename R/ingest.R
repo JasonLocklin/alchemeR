@@ -340,7 +340,16 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
     )
   })
 
-  out <- if (length(results) == 0) tibble::tibble() else dplyr::bind_rows(results)
+  # A bare tibble::tibble() here (no columns) would make every out$status/
+  # out$refreshed access below a silent "unknown column" warning returning
+  # NULL rather than the empty-but-typed vector expected -- same class of
+  # issue as the empty-parse-result columns fixed in parse.R.
+  empty_out <- tibble::tibble(
+    survey_id = character(0), decision = character(0), refreshed = logical(0),
+    n_fetched = integer(0), status = character(0),
+    started_at = Sys.time()[0], finished_at = Sys.time()[0]
+  )
+  out <- if (length(results) == 0) empty_out else dplyr::bind_rows(results)
 
   if (!dry_run) {
     write_rows_generic(con, "meta.run_events", tibble::tibble(

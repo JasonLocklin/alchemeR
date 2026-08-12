@@ -39,9 +39,11 @@ json1 <- function(x, redact = character(0)) {
 #' @return A tibble matching `raw.surveys`' columns.
 #' @keywords internal
 parse_surveys <- function(items) {
-  if (length(items) == 0) {
-    return(tibble::tibble())
-  }
+  # No early-return-tibble() shortcut for an empty `items`: purrr::map_chr()
+  # over list() already yields character(0), so this produces a correctly
+  # full-column, zero-row tibble on its own. A bare tibble::tibble() (no
+  # columns at all) previously broke upsert_surveys(), which combines this
+  # result with previously-stored rows and subsets by column name.
   tibble::tibble(
     survey_id = purrr::map_chr(items, ~ chr1(.x$id)),
     title = purrr::map_chr(items, ~ chr1(.x$title)),
@@ -157,9 +159,11 @@ parse_varnames <- function(items) {
 #' @return A tibble matching `raw.responses`' columns.
 #' @keywords internal
 parse_responses <- function(survey_id, items) {
-  if (length(items) == 0) {
-    return(tibble::tibble())
-  }
+  # See parse_surveys()'s comment: no early-return-tibble() shortcut for an
+  # empty `items`. carry_forward_deleted() combines this result with
+  # previously-stored rows and subsets by column name, which broke on a
+  # bare tibble::tibble() (no columns) when a survey's responses all
+  # disappeared in one fetch.
   tibble::tibble(
     survey_id = survey_id,
     response_id = purrr::map_chr(items, ~ chr1(.x$id)),
@@ -191,9 +195,8 @@ parse_responses <- function(survey_id, items) {
 #' @return A tibble matching `raw.survey_statistics`' columns.
 #' @keywords internal
 parse_statistics <- function(survey_id, items) {
-  if (length(items) == 0) {
-    return(tibble::tibble())
-  }
+  # See parse_surveys()'s comment: no early-return-tibble() shortcut for an
+  # empty `items`, for the same full-column-set-even-when-empty reason.
   tibble::tibble(
     survey_id = survey_id,
     question_id = purrr::map_chr(items, ~ chr1(.x$id)),
@@ -208,9 +211,8 @@ parse_statistics <- function(survey_id, items) {
 #' @return A tibble matching `raw.survey_campaigns`' columns.
 #' @keywords internal
 parse_campaigns <- function(survey_id, items) {
-  if (length(items) == 0) {
-    return(tibble::tibble())
-  }
+  # See parse_surveys()'s comment: no early-return-tibble() shortcut for an
+  # empty `items`, for the same full-column-set-even-when-empty reason.
   tibble::tibble(
     survey_id = survey_id,
     campaign_id = purrr::map_chr(items, ~ chr1(.x$id)),

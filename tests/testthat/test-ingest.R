@@ -144,6 +144,55 @@ test_that("a removed survey is flagged, not dropped", {
   expect_true(rows$is_deleted[rows$survey_id == "2"])
 })
 
+test_that("every survey vanishing from discovery at once flags them all, without crashing", {
+  # Regression test (ultrareview): discovery returning zero surveys produced
+  # a zero-column tibble, which upsert_surveys() combined with previously-
+  # stored rows and then subset by column name -- losing every real column
+  # and crashing the whole run with no meta.runs record.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"), mock_survey("2"))
+  state$responses <- list("1" = list(mock_response("r1")), "2" = list(mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  state$surveys <- list() # the whole account appears to have zero surveys
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client())
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  rows <- DBI::dbGetQuery(con, "SELECT survey_id, is_deleted FROM alchemer.raw.surveys ORDER BY survey_id")
+  expect_equal(rows$survey_id, c("1", "2"))
+  expect_true(all(rows$is_deleted))
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.runs")$n, 2)
+})
+
+test_that("every response vanishing from a survey at once flags them all, without crashing", {
+  # Regression test (ultrareview): the same zero-column-tibble bug in
+  # carry_forward_deleted(), triggered when a survey's responses all
+  # disappear in one fetch instead of the account's surveys.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  state$responses[["1"]] <- list() # the survey now reports zero responses
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client(), force = TRUE)
+
+  expect_equal(out$status, "ok")
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  rows <- DBI::dbGetQuery(con, "SELECT response_id, is_deleted FROM alchemer.raw.responses ORDER BY response_id")
+  expect_equal(rows$response_id, c("r1", "r2"))
+  expect_true(all(rows$is_deleted))
+})
+
 test_that("an error mid-survey leaves prior state intact and other surveys committed", {
   dir <- withr::local_tempdir()
   state <- new_state()

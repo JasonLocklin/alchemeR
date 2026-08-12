@@ -14,8 +14,11 @@ test_that("parse_surveys handles a null statistics block (QuestionLibrary survey
   expect_true(nzchar(out$payload[1]))
 })
 
-test_that("parse_surveys never errors on an empty list", {
-  expect_equal(nrow(parse_surveys(list())), 0)
+test_that("parse_surveys never errors on an empty list, and keeps every column", {
+  out <- parse_surveys(list())
+  expect_equal(nrow(out), 0)
+  expect_true("survey_id" %in% names(out))
+  expect_true("title" %in% names(out))
 })
 
 # --- parse_survey_definition ---------------------------------------------------
@@ -117,8 +120,11 @@ test_that("parse_responses handles is_test_data as a string and preserves it ver
   expect_equal(out$is_test_data, c("0", "1"))
 })
 
-test_that("parse_responses never errors on an empty list", {
-  expect_equal(nrow(parse_responses("1", list())), 0)
+test_that("parse_responses never errors on an empty list, and keeps every column", {
+  out <- parse_responses("1", list())
+  expect_equal(nrow(out), 0)
+  expect_true("response_id" %in% names(out))
+  expect_true("survey_data" %in% names(out))
 })
 
 # --- parse_statistics -----------------------------------------------------------
