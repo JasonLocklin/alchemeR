@@ -11,6 +11,9 @@ id_list_sql <- function(con, ids) {
 
 # `title` on survey_questions/survey_question_options is a {"English": "..."}
 # style map (ADR-003); survey titles themselves are plain strings, not maps.
+# `language` is interpolated into both a SQL string literal and a JSONPath
+# expression with no escaping here -- pub_layer() validates it against a
+# strict character allowlist before it ever reaches this function.
 title_sql <- function(column, language) {
   glue::glue("json_extract_string({column}, '$.\"{language}\"')")
 }
@@ -180,10 +183,20 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #' @param surveys If supplied, only these survey ids are rebuilt. Otherwise
 #'   every survey in `raw.surveys` is rebuilt.
 #' @param language Which title language to resolve multilingual fields to.
+#'   Letters, digits, spaces, and `-`/`_` only (Alchemer language names are
+#'   always simple words, e.g. `"English"`) -- title_sql() interpolates this
+#'   directly into a generated SQL/JSONPath expression with no further
+#'   escaping, so it is validated up front rather than quoted in context.
 #' @param wide_views Whether to (re)generate the per-survey wide views.
 #' @return Invisibly, the character vector of survey ids rebuilt.
 #' @export
 pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "English", wide_views = TRUE) {
+  if (!grepl("^[A-Za-z0-9 _-]+$", language)) {
+    cli::cli_abort(
+      "`language` must contain only letters, digits, spaces, '-', or '_'; got {.val {language}}.",
+      class = "alchemeR_config_error"
+    )
+  }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
 

@@ -17,7 +17,11 @@ pub_layer(
 \item{surveys}{If supplied, only these survey ids are rebuilt. Otherwise
 every survey in \code{raw.surveys} is rebuilt.}
 
-\item{language}{Which title language to resolve multilingual fields to.}
+\item{language}{Which title language to resolve multilingual fields to.
+Letters, digits, spaces, and \code{-}/\verb{_} only (Alchemer language names are
+always simple words, e.g. \code{"English"}) -- title_sql() interpolates this
+directly into a generated SQL/JSONPath expression with no further
+escaping, so it is validated up front rather than quoted in context.}
 
 \item{wide_views}{Whether to (re)generate the per-survey wide views.}
 }

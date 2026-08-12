@@ -60,6 +60,18 @@ test_that("pub_layer builds typed surveys/questions/options/responses/answers", 
   expect_equal(nrow(answers), 4) # 2 responses x 2 questions
 })
 
+test_that("pub_layer(language =) rejects a value that could break the generated SQL", {
+  # Regression test (ultrareview): title_sql() interpolated `language`
+  # directly into a SQL/JSONPath string with no escaping.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_error(pub_layer(dir, language = "English\") --"), class = "alchemeR_config_error")
+  expect_error(pub_layer(dir, language = "en'glish"), class = "alchemeR_config_error")
+})
+
 test_that("pub.answers reconciles against raw.responses.survey_data", {
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)
