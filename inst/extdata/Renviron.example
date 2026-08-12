@@ -30,3 +30,19 @@ ALCHEMER_RPM=100
 # refreshes it regardless of change detection -- a correctness backstop, not
 # a freshness setting. Lower it for accounts with edit-heavy closed surveys.
 ALCHEMER_FULL_SWEEP_DAYS=90
+
+# --- Analytics database (only needed for inst/scripts/etl_pipeline.R) -----
+# load_pub_layer()/load_pipeline_health() are plain DBI and work against any
+# DBI backend; these variables match the odbc + SQL Server example in
+# etl_pipeline.R. The service account they name only ever needs
+# CREATE TABLE / DROP TABLE / INSERT privileges on ANALYTICS_DB_SCHEMA --
+# never SELECT -- since nothing reads the destination back to decide what
+# to load (see vignette("scheduling")).
+ANALYTICS_DB_DRIVER=ODBC Driver 18 for SQL Server
+ANALYTICS_DB_SERVER=
+ANALYTICS_DB_DATABASE=
+ANALYTICS_DB_SCHEMA=dbo
+ANALYTICS_DB_UID=
+# Prefer keyring over a plaintext password here where possible; see
+# vignette("scheduling").
+ANALYTICS_DB_PWD=

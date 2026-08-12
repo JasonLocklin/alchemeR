@@ -74,6 +74,44 @@ enough headroom that this shouldn't happen under normal conditions, and
 treat it as a signal something upstream (a very large survey, a network
 stall) took longer than expected.
 
+## Loading into an analytics database
+
+`system.file("scripts", "etl_pipeline.R", package = "alchemeR")` extends the
+ingest job with a Load stage: `load_pub_layer()` copies every `pub.*` table
+into an external analytics database, and `load_pipeline_health()` writes a
+one-row status table there too, so tools watching the analytics database
+can see whether the pipeline is current without needing any access back to
+`ALCHEMER_DB`. The script shows [odbc](https://solutions.posit.co/connections/db/r-packages/odbc/)
+against SQL Server, but both functions take a plain `DBI` connection, so
+any backend works the same way.
+
+Every load is a full overwrite (`DBI::dbWriteTable(overwrite = TRUE)`),
+mirroring `ingest()`'s own full-refresh philosophy: it's idempotent, and it
+tolerates a schema change on either side (a new question on the Alchemer
+side, a widened column on the destination side) by construction, since each
+table is dropped and rebuilt from whatever `pub_layer()` currently produces
+rather than merged into a fixed shape. A consequence worth knowing: the
+destination service account only ever needs **CREATE TABLE / DROP TABLE /
+INSERT** privileges, never `SELECT` -- nothing here reads the destination
+back to decide what to do, because all pipeline state (what changed, what
+the last run's outcome was) lives in `ALCHEMER_DB`, not the analytics
+database. Configure that account's credentials the same way as the Alchemer
+ones: `ANALYTICS_DB_*` environment variables (see
+`inst/extdata/Renviron.example`), with the password preferably sourced from
+`keyring` rather than left in plaintext:
+
+```r
+Sys.setenv(ANALYTICS_DB_PWD = keyring::key_get("analytics_db", "password"))
+```
+
+One trade-off, stated plainly: because a table is dropped and recreated
+rather than swapped in atomically, a reader hitting the analytics database
+at exactly the wrong moment can see a table briefly empty or missing.
+Schedule the Load stage for low-read periods if that matters for your
+downstream consumers, or have them check `loaded_at`
+(`load_pub_layer()`'s return value) or the health table's `checked_at`
+before trusting a table's current contents.
+
 ## Offline / air-gapped installs
 
 The `ducklake` and `json` DuckDB extensions are downloaded on first use,

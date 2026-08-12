@@ -20,6 +20,11 @@
   generated per-survey wide views from the `raw` layer.
 * New maintenance functions: `db_status()`, `db_check()`, `compact()`,
   `expire_history()`, `expunge()`.
+* New `load_pub_layer()` and `load_pipeline_health()` complete an ETL pipeline
+  by copying the publication layer (and a monitorable health summary) into an
+  external analytics database over a plain `DBI` connection -- SQL Server via
+  `odbc`, or anything else `DBI` supports. See
+  `inst/scripts/etl_pipeline.R` and `vignette("scheduling")`.
 * New required configuration: `ALCHEMER_DB` (application database directory).
   `ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET` are now read from the environment
   by default across all functions, rather than being passed as bare arguments.

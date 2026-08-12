@@ -9,6 +9,11 @@ reference:
   - ingest
   - pub_layer
 
+- title: Loading into an analytics database
+  contents:
+  - load_pub_layer
+  - load_pipeline_health
+
 - title: Reading the application database
   contents:
   - alchemer_db

@@ -15,11 +15,15 @@ scripts stop depending on continued access to the Alchemer API.
 politely, and subsequent runs only refresh surveys that have actually
 changed. Once ingested, `pub_layer()` builds tidy, typed tables (and a
 one-row-per-respondent wide view per survey) for ordinary analysis.
+`load_pub_layer()` completes the ETL pipeline by copying that
+publication layer into an analytics database (SQL Server, Postgres, or
+anything else `DBI` supports).
 
 The package also still exposes direct-API functions for one-off use, and
 preserves the three functions from earlier releases as deprecated shims.
-See `vignette("data-model")` for the schema and
-`vignette("getting-started")` to begin.
+See `vignette("data-model")` for the schema,
+`vignette("getting-started")` to begin, and `vignette("scheduling")` for
+running `ingest()` (and the Load stage) unattended.
 
 ## Installation
 
