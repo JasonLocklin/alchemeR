@@ -1,3 +1,11 @@
+# Like the base `%||%` operator, but also substitutes on a length-1 NA --
+# `%||%` only triggers on NULL, which misses the common case of a value that
+# is present but NA (a tryCatch() fallback, or SUM() over zero SQL rows,
+# both of which produce NA, not NULL).
+or_default <- function(x, default) {
+  if (is.null(x) || (length(x) == 1 && is.na(x))) default else x
+}
+
 # Alchemer's list-endpoint items are shallow JSON objects whose fields vary
 # in shape (scalars, nested objects, arrays) between endpoints and even
 # between rows of the *same* endpoint (ADR-003) -- e.g. `referer` is a

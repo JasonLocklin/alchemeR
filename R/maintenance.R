@@ -29,8 +29,8 @@ db_status <- function(db = alchemer_db_path()) {
   size_bytes <- sum(file.info(list.files(db, recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE)
 
   tibble::tibble(
-    n_surveys = surveys$n, n_surveys_deleted = surveys$n_deleted %||% 0L,
-    n_responses = responses$n, n_responses_deleted = responses$n_deleted %||% 0L,
+    n_surveys = surveys$n, n_surveys_deleted = or_default(surveys$n_deleted, 0L),
+    n_responses = responses$n, n_responses_deleted = or_default(responses$n_deleted, 0L),
     n_snapshots = n_snapshots, size_bytes = size_bytes,
     last_run_id = if (nrow(last_run) > 0) last_run$run_id[1] else NA_character_,
     last_run_status = if (nrow(last_run) > 0) last_run$status[1] else NA_character_,

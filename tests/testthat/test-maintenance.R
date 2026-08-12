@@ -21,6 +21,22 @@ test_that("db_status summarises surveys, responses, snapshots, and the last run"
   expect_true(out$size_bytes > 0)
 })
 
+test_that("db_status reports 0, not NA, deleted counts on a fresh empty database", {
+  # Regression test (ultrareview): SUM(...) over zero matching rows returns
+  # SQL NULL (read into R as NA, not NULL), so the old `%||% 0L` fallback
+  # never substituted and n_surveys_deleted/n_responses_deleted came back NA
+  # -- which would break any monitoring dashboard expecting an integer.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  out <- db_status(dir)
+  expect_equal(out$n_surveys, 0)
+  expect_equal(out$n_surveys_deleted, 0L)
+  expect_equal(out$n_responses_deleted, 0L)
+  expect_false(is.na(out$n_surveys_deleted))
+})
+
 test_that("compact() flushes inlined rows to Parquet", {
   dir <- withr::local_tempdir()
   seed_maintenance_db(dir)

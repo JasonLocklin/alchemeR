@@ -137,6 +137,17 @@ test_that("alchemer_fetch returns the unwrapped payload for a single-object GET"
   expect_equal(out, list(id = "1", title = "Page 1"))
 })
 
+test_that("or_default() substitutes on NA as well as NULL, unlike %||%", {
+  # Regression test (ultrareview): status %||% 'unknown...' never fired
+  # because status was NA_integer_ (from a tryCatch fallback on a
+  # connection failure), not NULL, and base R's %||% only triggers on NULL.
+  expect_equal(or_default(NA_integer_, "fallback"), "fallback")
+  expect_equal(or_default(NA, "fallback"), "fallback")
+  expect_equal(or_default(NULL, "fallback"), "fallback")
+  expect_equal(or_default(404L, "fallback"), 404L)
+  expect_equal(or_default(0L, "fallback"), 0L)
+})
+
 test_that("alchemer_fetch never leaks the credentialed URL in an HTTP-error message", {
   httr2::local_mocked_responses(list(httr2::response(status_code = 404)))
   err <- tryCatch(

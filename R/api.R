@@ -78,7 +78,7 @@ alchemer_perform <- function(req) {
         c(
           "Alchemer API request failed.",
           "i" = "{req$method %||% 'GET'} {path}",
-          "i" = "HTTP status: {status %||% 'unknown (connection failure)'}"
+          "i" = "HTTP status: {or_default(status, 'unknown (connection failure)')}"
         ),
         class = "alchemeR_api_error",
         status = status,
@@ -172,7 +172,7 @@ alchemer_fetch_all <- function(client, path, query = list(), resultsperpage = 50
         c(
           "Alchemer API request failed.",
           "i" = "{req$method %||% 'GET'} {redact_url(req$url)}",
-          "i" = "HTTP status: {status %||% 'unknown (connection failure)'}"
+          "i" = "HTTP status: {or_default(status, 'unknown (connection failure)')}"
         ),
         class = "alchemeR_api_error",
         status = status,
