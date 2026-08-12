@@ -72,6 +72,23 @@ meta_tables <- list(
   schema_version = "version INTEGER"
 )
 
+# Exact column order for each raw.*/meta.* table, parsed once from the DDL
+# above. ingest() uses this to reorder/validate a tibble before writing it,
+# since the INSERT ... SELECT * FROM <registered data.frame> pattern maps
+# columns by *position*, not name -- a tibble built in a different column
+# order would silently write values into the wrong columns instead of
+# failing loudly (or would fail loudly with a confusing type-mismatch error,
+# which is how this helper earned its comment).
+table_columns <- function(ddl) {
+  unname(vapply(
+    strsplit(ddl, ",")[[1]],
+    function(col) strsplit(trimws(col), "\\s+")[[1]][1],
+    character(1)
+  ))
+}
+raw_table_columns <- lapply(raw_tables, table_columns)
+meta_table_columns <- lapply(meta_tables, table_columns)
+
 create_tables <- function(con, schema, tables) {
   DBI::dbExecute(con, glue::glue("CREATE SCHEMA IF NOT EXISTS {ducklake_alias}.{schema}"))
   for (name in names(tables)) {
@@ -101,4 +118,31 @@ ensure_schema <- function(con) {
   # Future schema migrations key off `current` here; there is only one
   # version so far.
   invisible(TRUE)
+}
+
+# Appends `rows` to raw.<table>, reordered/validated against the table's
+# declared column order (raw_table_columns) -- required because
+# INSERT ... SELECT * FROM <registered data.frame> maps columns positionally,
+# not by name, so a tibble built in the wrong order would silently write
+# values into the wrong columns instead of failing.
+write_rows <- function(con, table, rows) {
+  if (nrow(rows) == 0) {
+    return(invisible(NULL))
+  }
+  rows <- as.data.frame(dplyr::select(rows, dplyr::all_of(raw_table_columns[[table]])))
+  tmp_name <- paste0("tmp_write_", table, "_", paste(sample(letters, 12, replace = TRUE), collapse = ""))
+  duckdb::duckdb_register(con, tmp_name, rows)
+  DBI::dbExecute(con, glue::glue("INSERT INTO {ducklake_alias}.raw.{table} SELECT * FROM {tmp_name}"))
+  duckdb::duckdb_unregister(con, tmp_name)
+  invisible(NULL)
+}
+
+# Replace one survey's rows in a raw.* table: delete what's there, write the
+# new set. Used for every raw table except responses and surveys, which have
+# their own carry-forward-deleted logic (ADR-005) instead of a plain replace.
+replace_survey_rows <- function(con, table, survey_id, rows) {
+  DBI::dbExecute(con, glue::glue(
+    "DELETE FROM {ducklake_alias}.raw.{table} WHERE survey_id = {DBI::dbQuoteString(con, survey_id)}"
+  ))
+  write_rows(con, table, rows)
 }
