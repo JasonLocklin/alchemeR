@@ -6,9 +6,21 @@
   favour of `alchemer_surveys()`, `alchemer_survey()`, `alchemer_responses()`,
   `alchemer_questions()`, `alchemer_campaigns()`, and `alchemer_statistics()`. The
   deprecated functions delegate to their replacements and emit a one-time warning
-  per session (`lifecycle::deprecate_warn()`); they will be removed in 2.0.0.
-* `fetch_survey()` no longer writes a CSV file by default. Pass `file = "path.csv"`
-  to opt into the old file-writing behaviour.
+  per session (`lifecycle::deprecate_warn()`); they will be removed in 2.0.0. Their
+  **output shapes have changed**, not just their names -- this is not a drop-in
+  compatibility shim:
+    - `fetch_survey()` no longer writes a CSV file by default. Pass `file =
+      "path.csv"` to opt into file-writing, but the file's columns are also
+      different: one `survey_data` column holding each response's answers as a
+      JSON string, not one `Q<id>` column per question as before.
+    - `fetch_data_dictionary()` now returns `alchemer_questions()`'s column set
+      (`id`, `title`, `shortname`, `varname`, ...), not the old
+      `question_id`/`label`/`options_id`/`options_value` shape.
+    - `all_surveys()` no longer flattens nested fields (e.g. `statistics`) the
+      way the old `jsonlite::fromJSON(flatten = TRUE)`-based implementation did;
+      they come back as list-columns instead.
+  Code relying on any of these three functions' exact previous output shape will
+  need to update at the point of use, not just silence the deprecation warning.
 * The Alchemer API base domain is no longer hardcoded to `api.alchemer-ca.com`.
   It now defaults to `api.alchemer.com` and is configurable via `ALCHEMER_DOMAIN`,
   so accounts outside the Canadian region now work correctly.

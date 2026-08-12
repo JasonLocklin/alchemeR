@@ -19,5 +19,9 @@ A tibble with all Alchemer surveys.
 
 Superseded by \code{\link[=alchemer_surveys]{alchemer_surveys()}}, which reads credentials from the
 environment by default and returns the same tibble shape as every other
-direct-API function in this package.
+direct-API function in this package. \strong{This is not a drop-in replacement
+for the output shape}: nested fields such as \code{statistics} are no longer
+flattened to dotted column names (\code{statistics.Complete}) the way the old
+\code{jsonlite::fromJSON(flatten = TRUE)}-based implementation did -- they come
+back as list-columns instead.
 }

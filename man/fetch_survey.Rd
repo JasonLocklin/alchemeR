@@ -30,5 +30,9 @@ A tibble of survey responses, invisibly if \code{file} is supplied.
 \ifelse{html}{\href{https://lifecycle.r-lib.org/articles/stages.html#deprecated}{\figure{lifecycle-deprecated.svg}{options: alt='[Deprecated]'}}}{\strong{[Deprecated]}}
 
 Superseded by \code{\link[=alchemer_responses]{alchemer_responses()}}. Unlike the original, this no
-longer writes a CSV file unless \code{file} is supplied explicitly.
+longer writes a CSV file unless \code{file} is supplied explicitly, and when it
+does, \strong{the file's columns are different}: one \code{survey_data} column
+holding each response's answers as a JSON string, not one \verb{Q<id>} column
+per question. A script that reads the old wide-format CSV will need
+updating, not just adding \verb{file =}.
 }

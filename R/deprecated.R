@@ -10,7 +10,11 @@
 #'
 #' Superseded by [alchemer_surveys()], which reads credentials from the
 #' environment by default and returns the same tibble shape as every other
-#' direct-API function in this package.
+#' direct-API function in this package. **This is not a drop-in replacement
+#' for the output shape**: nested fields such as `statistics` are no longer
+#' flattened to dotted column names (`statistics.Complete`) the way the old
+#' `jsonlite::fromJSON(flatten = TRUE)`-based implementation did -- they come
+#' back as list-columns instead.
 #'
 #' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.
 #' @param secret_key Alchemer API secret key. Defaults to `ALCHEMER_API_SECRET`.
@@ -27,7 +31,11 @@ all_surveys <- function(token = NULL, secret_key = NULL) {
 #' `r lifecycle::badge("deprecated")`
 #'
 #' Superseded by [alchemer_responses()]. Unlike the original, this no
-#' longer writes a CSV file unless `file` is supplied explicitly.
+#' longer writes a CSV file unless `file` is supplied explicitly, and when it
+#' does, **the file's columns are different**: one `survey_data` column
+#' holding each response's answers as a JSON string, not one `Q<id>` column
+#' per question. A script that reads the old wide-format CSV will need
+#' updating, not just adding `file =`.
 #'
 #' @param survey_id Alchemer survey number, retrieved from the survey URL.
 #' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.
@@ -60,7 +68,13 @@ fetch_survey <- function(survey_id, token = NULL, secret_key = NULL,
 #' @description
 #' `r lifecycle::badge("deprecated")`
 #'
-#' Superseded by [alchemer_questions()].
+#' Superseded by [alchemer_questions()]. **This is not a drop-in replacement
+#' for the output shape**: the old return columns
+#' (`question_id`/`label`/`options_id`/`options_value`) are replaced by
+#' [alchemer_questions()]'s columns (`id`, `title`, `shortname`, `varname`,
+#' ...). Code that joined the old output to `fetch_survey()`'s
+#' `Q<id>`-prefixed columns by `question_id` will need to be rewritten, not
+#' just have its deprecation warning silenced.
 #'
 #' @param survey_id Alchemer survey number, retrieved from the survey URL.
 #' @param token Alchemer API token. Defaults to `ALCHEMER_API_TOKEN`.

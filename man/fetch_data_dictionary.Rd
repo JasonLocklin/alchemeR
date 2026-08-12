@@ -19,5 +19,11 @@ A tibble of question metadata.
 \description{
 \ifelse{html}{\href{https://lifecycle.r-lib.org/articles/stages.html#deprecated}{\figure{lifecycle-deprecated.svg}{options: alt='[Deprecated]'}}}{\strong{[Deprecated]}}
 
-Superseded by \code{\link[=alchemer_questions]{alchemer_questions()}}.
+Superseded by \code{\link[=alchemer_questions]{alchemer_questions()}}. \strong{This is not a drop-in replacement
+for the output shape}: the old return columns
+(\code{question_id}/\code{label}/\code{options_id}/\code{options_value}) are replaced by
+\code{\link[=alchemer_questions]{alchemer_questions()}}'s columns (\code{id}, \code{title}, \code{shortname}, \code{varname},
+...). Code that joined the old output to \code{fetch_survey()}'s
+\verb{Q<id>}-prefixed columns by \code{question_id} will need to be rewritten, not
+just have its deprecation warning silenced.
 }
