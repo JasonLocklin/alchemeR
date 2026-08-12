@@ -6,7 +6,7 @@
 # code path that uses these values to filter what gets written.
 
 new_run_id <- function() {
-  paste0(format(Sys.time(), "%Y%m%dT%H%M%OS3", tz = "UTC"), "Z-", paste(sample(letters, 6), collapse = ""))
+  paste0(format(Sys.time(), "%Y%m%dT%H%M%OS3", tz = "UTC"), "Z-", random_suffix(6))
 }
 
 # The probe is one request per survey: the newest response by date_updated,
