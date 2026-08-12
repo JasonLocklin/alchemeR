@@ -66,13 +66,26 @@ found) or with `ALCHEMER_DB` set to an absolute path regardless.
 
 ## Concurrency
 
-Only one process may hold the DuckLake catalog at a time (see
-`vignette("data-model")`). If a scheduled run overlaps a previous one that's
-still running, `alchemer_db()` fails fast with a message naming the
-catalog file, rather than hanging or corrupting anything -- schedule with
-enough headroom that this shouldn't happen under normal conditions, and
-treat it as a signal something upstream (a very large survey, a network
-stall) took longer than expected.
+*Verified* against a real DuckLake database with two separate processes:
+
+- Any number of `alchemer_db(read_only = TRUE)` readers can hold the
+  catalog open **simultaneously** -- an analyst's script is not kicked out
+  or blocked by another analyst also reading.
+- A **new** connection -- read or write -- fails immediately if `ingest()`,
+  `pub_layer()`, or any other write session is *already* attached, for as
+  long as that process keeps its connection open (not only while it holds
+  an open transaction). `alchemer_db()` fails fast with a message naming
+  the catalog file, rather than hanging.
+- A reader that connected *before* a write session started keeps working
+  throughout it -- only *new* connection attempts are affected, not
+  existing ones.
+
+In practice: schedule scheduled runs with enough headroom that they
+shouldn't overlap each other under normal conditions (treat an overlap as
+a signal something upstream -- a very large survey, a network stall --
+took longer than expected), and expect an analyst's read to occasionally
+fail with a clear "try again shortly" message if it happens to start while
+a pipeline run is in progress, rather than hang or return wrong data.
 
 ## Loading into an analytics database
 

@@ -68,8 +68,11 @@ alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE) {
           c(
             "Another process already holds this application database.",
             "i" = "{.path {catalog_path}}",
-            "i" = "Only one writer may hold the DuckLake catalog at a time (ADR-001).
-                   Wait for the other run to finish, then retry."
+            "i" = "DuckLake allows only one attachment at a time (ADR-001) -- this
+                   blocks a second reader just as much as a second writer, for as
+                   long as the other process keeps its connection open (not only
+                   while it holds an open transaction). Wait for the other run to
+                   finish, then retry."
           ),
           class = "alchemeR_db_locked", call = NULL
         )

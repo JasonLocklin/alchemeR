@@ -26,10 +26,13 @@ data, plus a small DuckDB file that tracks table structure, snapshots, and
 where every row lives. `alchemer_db()` attaches it, under the fixed alias
 `alchemer`, as three schemas: `raw`, `meta`, and `pub`.
 
-Only one process may hold the catalog open for writing at a time. If
-another `ingest()` (or any `alchemer_db()` call) is already running,
-opening it again fails immediately with a message naming the file, rather
-than hanging.
+Only one process may hold the catalog open for writing at a time; any
+number of `read_only = TRUE` readers can hold it open simultaneously. If a
+write session (`ingest()`, `pub_layer()`, ...) is already running, a *new*
+connection attempt -- read or write -- fails immediately with a message
+naming the file, rather than hanging; a reader already connected before
+that session started is unaffected. See `vignette("scheduling")`'s
+Concurrency section for the exact rules, verified against a real database.
 
 ## `raw`: archival, verbatim, untyped
 
