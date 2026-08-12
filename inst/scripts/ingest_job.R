@@ -11,7 +11,10 @@ library(alchemeR)
 
 result <- ingest()
 
-cli::cli_inform("ingest() considered {nrow(result)} survey(s): {sum(result$status == 'ok')} refreshed, {sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed.")
+cli::cli_inform(paste0(
+  "ingest() considered {nrow(result)} survey(s): {sum(result$status == 'ok')} refreshed, ",
+  "{sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed."
+))
 
 if (any(result$status == "error")) {
   print(result[result$status == "error", c("survey_id", "decision", "status")])
@@ -20,7 +23,10 @@ if (any(result$status == "error")) {
 pub_layer()
 
 status <- db_status()
-cli::cli_inform("Application database: {status$n_surveys} surveys, {status$n_responses} responses, {status$size_bytes} bytes on disk.")
+cli::cli_inform(paste0(
+  "Application database: {status$n_surveys} surveys, {status$n_responses} responses, ",
+  "{status$size_bytes} bytes on disk."
+))
 
 checks <- db_check()
 if (!all(checks$passed)) {

@@ -53,7 +53,11 @@ run_integrity_checks <- function(con, survey_id = NULL, expected_count = NULL) {
   ))$n
   checks$responses_reference_known_surveys <- list(
     passed = n_orphan_responses == 0,
-    message = if (n_orphan_responses == 0) "OK" else glue::glue("{n_orphan_responses} response(s) with no matching raw.surveys row")
+    message = if (n_orphan_responses == 0) {
+      "OK"
+    } else {
+      glue::glue("{n_orphan_responses} response(s) with no matching raw.surveys row")
+    }
   )
 
   n_orphan_options <- DBI::dbGetQuery(con, glue::glue(
@@ -66,7 +70,11 @@ run_integrity_checks <- function(con, survey_id = NULL, expected_count = NULL) {
   ))$n
   checks$options_reference_known_questions <- list(
     passed = n_orphan_options == 0,
-    message = if (n_orphan_options == 0) "OK" else glue::glue("{n_orphan_options} option(s) with no matching raw.survey_questions row")
+    message = if (n_orphan_options == 0) {
+      "OK"
+    } else {
+      glue::glue("{n_orphan_options} option(s) with no matching raw.survey_questions row")
+    }
   )
 
   tibble::tibble(

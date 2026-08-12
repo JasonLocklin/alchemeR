@@ -4,6 +4,11 @@
 # archival-grade fidelity, so it is where judgement calls (typing, language,
 # reporting-value joins) belong, per ADR-003.
 
+# A comma-separated, quoted SQL literal list, for `x IN (...)`.
+id_list_sql <- function(con, ids) {
+  paste(DBI::dbQuoteString(con, ids), collapse = ",")
+}
+
 # `title` on survey_questions/survey_question_options is a {"English": "..."}
 # style map (ADR-003); survey titles themselves are plain strings, not maps.
 title_sql <- function(column, language) {
@@ -31,8 +36,9 @@ slugify <- function(x, max_len = 40) {
 }
 
 rebuild_pub_surveys <- function(con, survey_ids) {
+  ids <- id_list_sql(con, survey_ids)
   DBI::dbExecute(con, glue::glue(
-    "DELETE FROM {ducklake_alias}.pub.surveys WHERE survey_id IN ({paste(DBI::dbQuoteString(con, survey_ids), collapse = ',')})"
+    "DELETE FROM {ducklake_alias}.pub.surveys WHERE survey_id IN ({ids})"
   ))
   DBI::dbExecute(con, glue::glue(
     "INSERT INTO {ducklake_alias}.pub.surveys
@@ -41,7 +47,7 @@ rebuild_pub_surveys <- function(con, survey_ids) {
             {timestamp_sql('modified_on')} AS modified_on,
             team, is_deleted
      FROM {ducklake_alias}.raw.surveys
-     WHERE survey_id IN ({paste(DBI::dbQuoteString(con, survey_ids), collapse = ',')})"
+     WHERE survey_id IN ({ids})"
   ))
 }
 
@@ -193,7 +199,7 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
   rebuild_pub_surveys(con, survey_ids)
   titles <- DBI::dbGetQuery(con, glue::glue(
     "SELECT survey_id, title FROM {ducklake_alias}.pub.surveys
-     WHERE survey_id IN ({paste(DBI::dbQuoteString(con, survey_ids), collapse = ',')})"
+     WHERE survey_id IN ({id_list_sql(con, survey_ids)})"
   ))
 
   for (survey_id in survey_ids) {

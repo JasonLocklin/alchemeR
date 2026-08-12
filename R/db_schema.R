@@ -145,6 +145,13 @@ ensure_schema <- function(con) {
   invisible(TRUE)
 }
 
+# A short random string for scoping a temp table/view name to one call, so
+# concurrent writes on the same connection (there are none today, but the
+# pattern is shared by db_schema.R and ingest.R) can't collide.
+random_suffix <- function(n = 12) {
+  paste(sample(letters, n, replace = TRUE), collapse = "")
+}
+
 # Appends `rows` to raw.<table>, reordered/validated against the table's
 # declared column order (raw_table_columns) -- required because
 # INSERT ... SELECT * FROM <registered data.frame> maps columns positionally,
@@ -155,7 +162,7 @@ write_rows <- function(con, table, rows) {
     return(invisible(NULL))
   }
   rows <- as.data.frame(dplyr::select(rows, dplyr::all_of(raw_table_columns[[table]])))
-  tmp_name <- paste0("tmp_write_", table, "_", paste(sample(letters, 12, replace = TRUE), collapse = ""))
+  tmp_name <- paste0("tmp_write_", table, "_", random_suffix())
   duckdb::duckdb_register(con, tmp_name, rows)
   DBI::dbExecute(con, glue::glue("INSERT INTO {ducklake_alias}.raw.{table} SELECT * FROM {tmp_name}"))
   duckdb::duckdb_unregister(con, tmp_name)

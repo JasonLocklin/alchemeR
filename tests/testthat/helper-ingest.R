@@ -30,7 +30,7 @@ mock_client_router <- function(state) {
     survey_id <- survey_id_from_path(path)
 
     body <- if (grepl("/surveyresponse$", path) && !is.null(q$order_by)) {
-      # probe: resultsperpage=1&order_by=-date_updated
+      # the probe request (resultsperpage 1, order_by -date_updated)
       items <- state$responses[[survey_id]] %||% list()
       newest <- if (length(items) > 0) list(items[[length(items)]]) else list()
       list(result_ok = TRUE, total_count = length(items), page = 1, total_pages = 1, data = newest)

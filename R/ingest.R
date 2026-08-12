@@ -75,13 +75,14 @@ get_survey_state <- function(con, survey_id) {
 update_survey_state <- function(con, survey_id, modified_on, probe, success, now = Sys.time()) {
   prior <- get_survey_state(con, survey_id)
   consecutive_failures <- if (nrow(prior) == 0) 0L else as.integer(prior$consecutive_failures[1] %||% 0L)
+  prior_success_at <- if (nrow(prior) == 0) as.POSIXct(NA) else prior$last_successful_refresh_at[1]
   row <- tibble::tibble(
     survey_id = survey_id,
     last_modified_on = chr1(modified_on),
     last_probe_total_count = as.integer(probe$total_count %||% NA_integer_),
     last_probe_max_date_updated = chr1(probe$max_date_updated %||% NA),
     last_refresh_started_at = now,
-    last_successful_refresh_at = if (success) now else (if (nrow(prior) == 0) as.POSIXct(NA) else prior$last_successful_refresh_at[1]),
+    last_successful_refresh_at = if (success) now else prior_success_at,
     consecutive_failures = if (success) 0L else consecutive_failures + 1L
   )
   DBI::dbExecute(con, glue::glue(
@@ -99,7 +100,7 @@ write_rows_generic <- function(con, table, rows) {
   }
   bare_name <- sub("^meta\\.", "", table)
   rows <- as.data.frame(dplyr::select(rows, dplyr::all_of(meta_table_columns[[bare_name]])))
-  tmp_name <- paste0("tmp_write_", gsub("\\.", "_", table), "_", paste(sample(letters, 12, replace = TRUE), collapse = ""))
+  tmp_name <- paste0("tmp_write_", gsub("\\.", "_", table), "_", random_suffix())
   duckdb::duckdb_register(con, tmp_name, rows)
   DBI::dbExecute(con, glue::glue("INSERT INTO {ducklake_alias}.{table} SELECT * FROM {tmp_name}"))
   duckdb::duckdb_unregister(con, tmp_name)
@@ -107,8 +108,8 @@ write_rows_generic <- function(con, table, rows) {
 }
 
 log_event <- function(con, run_id, survey_id, phase, status, http_status = NA_integer_,
-                       message = NA_character_, started_at = Sys.time(), finished_at = Sys.time(),
-                       n_responses = NA_integer_) {
+                      message = NA_character_, started_at = Sys.time(), finished_at = Sys.time(),
+                      n_responses = NA_integer_) {
   write_rows_generic(con, "meta.run_events", tibble::tibble(
     run_id = run_id, survey_id = chr1(survey_id), phase = phase, status = status,
     http_status = as.integer(http_status), message = as.character(message),
@@ -122,7 +123,10 @@ log_event <- function(con, run_id, survey_id, phase, status, http_status = NA_in
 # than diffed row by row.
 upsert_surveys <- function(con, run_id, discovered, now = Sys.time()) {
   prior <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM {ducklake_alias}.raw.surveys"))
-  discovered <- dplyr::mutate(discovered, ingested_at = now, run_id = run_id, is_deleted = FALSE, deleted_detected_at = as.POSIXct(NA))
+  discovered <- dplyr::mutate(
+    discovered, ingested_at = now, run_id = run_id,
+    is_deleted = FALSE, deleted_detected_at = as.POSIXct(NA)
+  )
 
   if (nrow(prior) > 0) {
     vanished <- prior[!(prior$survey_id %in% discovered$survey_id), , drop = FALSE]
@@ -194,7 +198,8 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
         tibble::tibble()
       }
 
-      fetched_responses <- parse_responses(survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveyresponse")))
+      response_items <- alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveyresponse"))
+      fetched_responses <- parse_responses(survey_id, response_items)
       n_fetched <- nrow(fetched_responses)
 
       responses <- stamp(carry_forward_deleted(con, survey_id, fetched_responses, now))
@@ -260,9 +265,9 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
 #'   counts, timings, and status.
 #' @export
 ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
-                    include = c("campaigns", "statistics"),
-                    full_sweep_days = alchemer_full_sweep_days(), rpm = alchemer_rpm(),
-                    dry_run = FALSE, client = alchemer_client(rpm = rpm)) {
+                   include = c("campaigns", "statistics"),
+                   full_sweep_days = alchemer_full_sweep_days(), rpm = alchemer_rpm(),
+                   dry_run = FALSE, client = alchemer_client(rpm = rpm)) {
   run_id <- new_run_id()
   run_started_at <- Sys.time()
   con <- alchemer_db(db)
@@ -300,7 +305,10 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
     }
 
     if (!dry_run) {
-      log_event(con, run_id, survey_id, "decision", "info", message = decision$reason, started_at = t0, finished_at = Sys.time())
+      log_event(
+        con, run_id, survey_id, "decision", "info",
+        message = decision$reason, started_at = t0, finished_at = Sys.time()
+      )
     }
 
     if (!decision$refresh) {
@@ -316,8 +324,9 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
       ))
     }
 
+    probe_or_unknown <- probe %||% list(total_count = NA_integer_, max_date_updated = NA_character_)
     outcome <- tryCatch(
-      refresh_survey(con, client, survey_id, run_id, include, modified_on, probe %||% list(total_count = NA_integer_, max_date_updated = NA_character_)),
+      refresh_survey(con, client, survey_id, run_id, include, modified_on, probe_or_unknown),
       error = function(e) list(status = "error", message = conditionMessage(e), n_fetched = NA_integer_)
     )
     log_event(
@@ -339,7 +348,9 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
       http_status = NA_integer_, message = NA_character_,
       started_at = run_started_at, finished_at = Sys.time(), n_responses = NA_integer_
     ))
-    DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.runs WHERE run_id = {DBI::dbQuoteString(con, run_id)}"))
+    DBI::dbExecute(con, glue::glue(
+      "DELETE FROM {ducklake_alias}.meta.runs WHERE run_id = {DBI::dbQuoteString(con, run_id)}"
+    ))
     write_rows_generic(con, "meta.runs", tibble::tibble(
       run_id = run_id, started_at = run_started_at, finished_at = Sys.time(),
       status = if (nrow(out) > 0 && any(out$status == "error")) "completed_with_errors" else "completed",

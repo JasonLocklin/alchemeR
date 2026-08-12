@@ -38,11 +38,16 @@ test_that("alchemer_responses returns one row per response, including edge cases
 
 test_that("alchemer_responses passes extra query parameters through, e.g. order_by", {
   httptest2::without_internet({
-    req <- alchemer_request(test_client(), "survey/8611799/surveyresponse",
-                             query = list(order_by = "-date_updated"))
+    req <- alchemer_request(
+      test_client(), "survey/8611799/surveyresponse",
+      query = list(order_by = "-date_updated")
+    )
     httptest2::expect_GET(
       httr2::req_perform(req),
-      "https://api.alchemer.com/v5/survey/8611799/surveyresponse?api_token=TOKEN&api_token_secret=SECRET&order_by=-date_updated"
+      paste0(
+        "https://api.alchemer.com/v5/survey/8611799/surveyresponse?",
+        "api_token=TOKEN&api_token_secret=SECRET&order_by=-date_updated"
+      )
     )
   })
 })

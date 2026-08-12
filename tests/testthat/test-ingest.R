@@ -18,7 +18,8 @@ test_that("decide_refresh: unchanged modified_on/probe skips", {
     last_probe_max_date_updated = "2026-01-01 00:00:00",
     last_successful_refresh_at = Sys.time() - 60
   )
-  out <- decide_refresh(prior, "2026-01-01", list(total_count = 5L, max_date_updated = "2026-01-01 00:00:00"), FALSE, 90)
+  probe <- list(total_count = 5L, max_date_updated = "2026-01-01 00:00:00")
+  out <- decide_refresh(prior, "2026-01-01", probe, FALSE, 90)
   expect_false(out$refresh)
 })
 
@@ -28,7 +29,8 @@ test_that("decide_refresh: a changed probe triggers a refresh, never a filter", 
     last_probe_max_date_updated = "2026-01-01 00:00:00",
     last_successful_refresh_at = Sys.time() - 60
   )
-  out <- decide_refresh(prior, "2026-01-01", list(total_count = 6L, max_date_updated = "2026-01-01 00:00:00"), FALSE, 90)
+  probe <- list(total_count = 6L, max_date_updated = "2026-01-01 00:00:00")
+  out <- decide_refresh(prior, "2026-01-01", probe, FALSE, 90)
   expect_true(out$refresh)
   expect_match(out$reason, "probe")
 })
@@ -39,7 +41,8 @@ test_that("decide_refresh: full_sweep_days = 0 forces a refresh even with no oth
     last_probe_max_date_updated = "2026-01-01 00:00:00",
     last_successful_refresh_at = Sys.time() - 1
   )
-  out <- decide_refresh(prior, "2026-01-01", list(total_count = 5L, max_date_updated = "2026-01-01 00:00:00"), FALSE, 0)
+  probe <- list(total_count = 5L, max_date_updated = "2026-01-01 00:00:00")
+  out <- decide_refresh(prior, "2026-01-01", probe, FALSE, 0)
   expect_true(out$refresh)
   expect_match(out$reason, "full_sweep_days")
 })

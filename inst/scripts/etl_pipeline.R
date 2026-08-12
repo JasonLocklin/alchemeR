@@ -20,13 +20,19 @@ library(alchemeR)
 # --- Extract + Transform ------------------------------------------------
 
 result <- ingest()
-cli::cli_inform("ingest(): {sum(result$status == 'ok')} refreshed, {sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed.")
+cli::cli_inform(paste0(
+  "ingest(): {sum(result$status == 'ok')} refreshed, ",
+  "{sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed."
+))
 
 pub_layer()
 
 checks <- db_check()
 if (!all(checks$passed)) {
-  cli::cli_warn("db_check() found integrity failures -- loading proceeds anyway; investigate raw/meta before trusting the results.")
+  cli::cli_warn(paste0(
+    "db_check() found integrity failures -- loading proceeds anyway; ",
+    "investigate raw/meta before trusting the results."
+  ))
   print(checks[!checks$passed, ])
 }
 

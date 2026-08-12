@@ -113,7 +113,9 @@ test_that("db_check catches a response with no matching survey", {
 test_that("db_check catches an option with no matching question", {
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)
-  DBI::dbExecute(con, "INSERT INTO alchemer.raw.survey_question_options (survey_id, question_id, option_id) VALUES ('1', 'missing', 'o1')")
+  DBI::dbExecute(con, "
+    INSERT INTO alchemer.raw.survey_question_options (survey_id, question_id, option_id)
+    VALUES ('1', 'missing', 'o1')")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
   out <- db_check(dir)

@@ -37,7 +37,7 @@ all_surveys <- function(token, secret_key) {
 #' @return A tibble of survey responses, invisibly if `file` is supplied.
 #' @export
 fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key",
-                          survey_name = "survey_data", file = NULL) {
+                         survey_name = "survey_data", file = NULL) {
   lifecycle::deprecate_warn("1.0.0", "fetch_survey()", "alchemer_responses()")
   df <- alchemer_responses(survey_id, alchemer_client(token = token, secret = secret_key))
   if (!is.null(file)) {

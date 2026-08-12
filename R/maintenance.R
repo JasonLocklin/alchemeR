@@ -71,8 +71,9 @@ compact <- function(db = alchemer_db_path()) {
 expire_history <- function(db = alchemer_db_path(), older_than) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  cutoff <- DBI::dbQuoteLiteral(con, as.POSIXct(older_than))
   DBI::dbExecute(con, glue::glue(
-    "CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => {DBI::dbQuoteLiteral(con, as.POSIXct(older_than))})"
+    "CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => {cutoff})"
   ))
   DBI::dbExecute(con, glue::glue("CALL ducklake_cleanup_old_files('{ducklake_alias}')"))
   invisible(TRUE)

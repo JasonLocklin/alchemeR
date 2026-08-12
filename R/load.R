@@ -78,7 +78,7 @@ destination_name <- function(schema, table) {
 #' @return Invisibly, the health row that was loaded (a one-row tibble).
 #' @export
 load_pipeline_health <- function(dest_con, db = alchemer_db_path(),
-                                  table = "alchemer_pipeline_health", schema = NULL) {
+                                 table = "alchemer_pipeline_health", schema = NULL) {
   status <- db_status(db)
   status$checked_at <- Sys.time()
   DBI::dbWriteTable(dest_con, destination_name(schema, table), status, overwrite = TRUE)
