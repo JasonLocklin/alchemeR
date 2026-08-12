@@ -92,6 +92,9 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
 #'   its `raw.surveys` record) is removed.
 #' @param before_date If supplied, `raw.responses` rows with
 #'   `date_submitted` earlier than this are removed, across every survey.
+#'   Interpreted as an America/Toronto calendar date (midnight local time);
+#'   `date_submitted` itself is parsed using its own per-row EST/EDT suffix,
+#'   so the comparison is DST-correct without guessing at a fixed offset.
 #' @return Invisibly, `TRUE`.
 #' @export
 expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL) {
@@ -116,10 +119,25 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
         DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.survey_state WHERE survey_id = {sid}"))
       }
       if (!is.null(before_date)) {
-        cutoff <- DBI::dbQuoteLiteral(con, as.POSIXct(before_date))
+        # date_submitted carries an explicit EST or EDT suffix per row --
+        # the correct abbreviation for that specific date -- so it parses
+        # into an exact instant with no DST calendar lookup of our own,
+        # just by honoring the offset Alchemer already told us (EST/EDT
+        # are always -05:00/-04:00; there is no ambiguity to resolve).
+        # before_date is interpreted as America/Toronto midnight, matching
+        # how a retention cutoff is actually read and set.
+        cutoff <- glue::glue(
+          "(TIMESTAMP {DBI::dbQuoteString(con, format(as.Date(before_date)))} AT TIME ZONE 'America/Toronto')"
+        )
         DBI::dbExecute(con, glue::glue(
           "DELETE FROM {ducklake_alias}.raw.responses
-           WHERE TRY_CAST(regexp_replace(date_submitted, ' [A-Z]{{2,5}}$', '') AS TIMESTAMP) < {cutoff}"
+           WHERE (CASE
+             WHEN date_submitted LIKE '% EST' THEN
+               TRY_CAST(regexp_replace(date_submitted, ' EST$', '') || '-05' AS TIMESTAMPTZ)
+             WHEN date_submitted LIKE '% EDT' THEN
+               TRY_CAST(regexp_replace(date_submitted, ' EDT$', '') || '-04' AS TIMESTAMPTZ)
+             ELSE NULL
+           END) < {cutoff}"
         ))
       }
       DBI::dbExecute(con, "COMMIT")

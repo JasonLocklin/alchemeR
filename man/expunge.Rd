@@ -13,7 +13,10 @@ expunge(db = alchemer_db_path(), survey_id = NULL, before_date = NULL)
 its \code{raw.surveys} record) is removed.}
 
 \item{before_date}{If supplied, \code{raw.responses} rows with
-\code{date_submitted} earlier than this are removed, across every survey.}
+\code{date_submitted} earlier than this are removed, across every survey.
+Interpreted as an America/Toronto calendar date (midnight local time);
+\code{date_submitted} itself is parsed using its own per-row EST/EDT suffix,
+so the comparison is DST-correct without guessing at a fixed offset.}
 }
 \value{
 Invisibly, \code{TRUE}.

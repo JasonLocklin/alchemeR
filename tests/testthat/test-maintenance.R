@@ -76,6 +76,31 @@ test_that("expunge(before_date =) removes only the matching responses, and their
   expect_s3_class(err, "error")
 })
 
+test_that("expunge(before_date =) is DST-correct across an EST/EDT boundary", {
+  # Regression test (ultrareview): the before_date comparison previously
+  # stripped date_submitted's EST/EDT suffix and treated it as an
+  # unlabeled naive timestamp, with no documented (or correct) handling of
+  # which timezone either side of the comparison was actually in. This
+  # checks a response 1 hour before a Toronto midnight cutoff (should be
+  # removed) and one 1 hour after (should be kept), using an EDT-tagged
+  # (summer) date_submitted where a fixed UTC-5 offset would get the
+  # comparison wrong by an hour.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S1', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses (survey_id, response_id, date_submitted, is_deleted) VALUES
+    ('1', 'before', '2024-06-30 23:00:00 EDT', FALSE),
+    ('1', 'after', '2024-07-01 01:00:00 EDT', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expunge(dir, before_date = as.Date("2024-07-01"))
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  remaining <- DBI::dbGetQuery(con2, "SELECT response_id FROM alchemer.raw.responses")$response_id
+  expect_equal(remaining, "after")
+})
+
 test_that("expunge(survey_id =) removes the survey and all of its raw rows", {
   dir <- withr::local_tempdir()
   seed_maintenance_db(dir)

@@ -48,6 +48,11 @@ alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE) {
   con <- suppressMessages(DBI::dbConnect(duckdb::duckdb()))
   install_and_load(con, "json")
   install_and_load(con, "ducklake")
+  # Named-zone AT TIME ZONE conversions (used by pub_layer() and expunge())
+  # need this; DuckDB can autoload it on first use, but loading it
+  # explicitly here keeps it in the same offline-pre-staging list as
+  # json/ducklake instead of a surprise network fetch mid-query.
+  install_and_load(con, "icu")
 
   options_sql <- if (read_only) {
     "READ_ONLY"
