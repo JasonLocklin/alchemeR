@@ -60,6 +60,29 @@ test_that("pub_layer builds typed surveys/questions/options/responses/answers", 
   expect_equal(nrow(answers), 4) # 2 responses x 2 questions
 })
 
+test_that("INSERT ... BY NAME rejects a column-name mismatch instead of silently misrouting", {
+  # Regression test (ultrareview): pub_table_columns existed as the same
+  # column-order-safety mechanism used for raw_table_columns/
+  # meta_table_columns, but pub_layer.R's hand-written INSERT ... SELECT
+  # statements never referenced it -- dead code with no safety net behind
+  # the parallel hand-maintained SELECT lists. Every INSERT in pub_layer.R
+  # now uses `BY NAME`, which matches SELECT output to target columns by
+  # name rather than position; this locks in that DuckDB actually enforces
+  # that (a typo'd alias fails loudly) rather than silently reordering.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+
+  err <- tryCatch(
+    DBI::dbExecute(con, "
+      INSERT INTO alchemer.pub.surveys BY NAME
+      SELECT '1' AS survey_id, 'Typo' AS ttile"),
+    error = function(e) e
+  )
+  expect_s3_class(err, "error")
+  expect_match(conditionMessage(err), "ttile|column")
+})
+
 test_that("pub_layer(language =) rejects a value that could break the generated SQL", {
   # Regression test (ultrareview): title_sql() interpolated `language`
   # directly into a SQL/JSONPath string with no escaping.

@@ -43,8 +43,15 @@ rebuild_pub_surveys <- function(con, survey_ids) {
   DBI::dbExecute(con, glue::glue(
     "DELETE FROM {ducklake_alias}.pub.surveys WHERE survey_id IN ({ids})"
   ))
+  # BY NAME (not a plain positional INSERT ... SELECT) matches each SELECT
+  # column to its target by the alias given here, not by position -- so a
+  # future column added/reordered in pub_tables' DDL (db_schema.R) without a
+  # matching update to this SELECT list fails loudly on a name mismatch (or,
+  # for a genuinely new target column with no matching alias, inserts NULL)
+  # instead of silently writing a value into the wrong column. Every INSERT
+  # in this file uses the same pattern.
   DBI::dbExecute(con, glue::glue(
-    "INSERT INTO {ducklake_alias}.pub.surveys
+    "INSERT INTO {ducklake_alias}.pub.surveys BY NAME
      SELECT survey_id, title, type, status,
             {timestamp_sql('created_on')} AS created_on,
             {timestamp_sql('modified_on')} AS modified_on,
@@ -59,7 +66,7 @@ rebuild_pub_survey <- function(con, survey_id, language) {
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.questions WHERE survey_id = {qs}"))
   DBI::dbExecute(con, glue::glue(
-    "INSERT INTO {ducklake_alias}.pub.questions
+    "INSERT INTO {ducklake_alias}.pub.questions BY NAME
      SELECT survey_id, question_id, page_id, type,
             {title_sql('title', language)} AS title,
             shortname, varname, question_order
@@ -68,7 +75,7 @@ rebuild_pub_survey <- function(con, survey_id, language) {
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.options WHERE survey_id = {qs}"))
   DBI::dbExecute(con, glue::glue(
-    "INSERT INTO {ducklake_alias}.pub.options
+    "INSERT INTO {ducklake_alias}.pub.options BY NAME
      SELECT survey_id, question_id, option_id,
             {title_sql('title', language)} AS title,
             value, option_order
@@ -77,7 +84,7 @@ rebuild_pub_survey <- function(con, survey_id, language) {
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.responses WHERE survey_id = {qs}"))
   DBI::dbExecute(con, glue::glue(
-    "INSERT INTO {ducklake_alias}.pub.responses
+    "INSERT INTO {ducklake_alias}.pub.responses BY NAME
      SELECT survey_id, response_id, status,
             (is_test_data = '1') AS is_test_data,
             {timestamp_sql('date_submitted')} AS date_submitted,
@@ -96,7 +103,7 @@ rebuild_pub_survey <- function(con, survey_id, language) {
   # raw.responses.survey_data, which is untouched by this join.
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.answers WHERE survey_id = {qs}"))
   DBI::dbExecute(con, glue::glue(
-    "INSERT INTO {ducklake_alias}.pub.answers
+    "INSERT INTO {ducklake_alias}.pub.answers BY NAME
      SELECT
        r.survey_id, r.response_id, je.key AS question_id,
        (SELECT q.shortname FROM {ducklake_alias}.raw.survey_questions q

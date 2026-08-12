@@ -112,7 +112,11 @@ table_columns <- function(ddl) {
 }
 raw_table_columns <- lapply(raw_tables, table_columns)
 meta_table_columns <- lapply(meta_tables, table_columns)
-pub_table_columns <- lapply(pub_tables, table_columns)
+# pub_layer.R's writes are hand-written INSERT ... BY NAME SELECT statements,
+# not a registered-data.frame INSERT ... SELECT * -- BY NAME already matches
+# by column name (and fails loudly on a mismatch) with no positional-order
+# risk to guard against, so there is no pub_table_columns here to parallel
+# raw_table_columns/meta_table_columns above.
 
 create_tables <- function(con, schema, tables) {
   DBI::dbExecute(con, glue::glue("CREATE SCHEMA IF NOT EXISTS {ducklake_alias}.{schema}"))
