@@ -60,11 +60,12 @@ test_that("pub_layer builds typed surveys/questions/options/responses/answers", 
   expect_equal(nrow(answers), 4) # 2 responses x 2 questions
 })
 
-test_that("date_submitted/date_started convert their EST/EDT suffix to identical Toronto wall-clock time", {
-  # EST/EDT *are* Toronto's own standard/daylight offsets, so a properly
-  # parsed EST/EDT-suffixed timestamp should land at the same wall-clock
-  # value in America/Toronto -- winter (EST) and summer (EDT) both checked,
-  # since a naive fixed-offset assumption would get one of the two wrong.
+test_that("date_submitted/date_started parse their EST/EDT suffix into the configured timezone", {
+  # EST/EDT *are* Toronto's own standard/daylight offsets, so with
+  # tz = America/Toronto a properly parsed EST/EDT-suffixed timestamp lands
+  # at the same wall-clock value it arrived as -- winter (EST) and summer
+  # (EDT) both checked, since a naive fixed-offset assumption would get one
+  # of the two wrong.
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)
   DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S', FALSE)")
@@ -74,7 +75,7 @@ test_that("date_submitted/date_started convert their EST/EDT suffix to identical
     ('1', 'summer', '2026-07-15 14:30:00 EDT', '2026-07-15 14:25:00 EDT', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir)
+  pub_layer(dir, tz = "America/Toronto")
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -85,29 +86,83 @@ test_that("date_submitted/date_started convert their EST/EDT suffix to identical
   expect_equal(format(responses$date_started[responses$response_id == "winter"]), "2026-01-15 14:25:00")
 })
 
-test_that("date_updated/created_on/modified_on convert their assumed-UTC value to Toronto wall-clock time", {
-  # No suffix at all on these three, so they're assumed UTC and shifted --
-  # -5h in winter (EST), -4h in summer (EDT) -- rather than left naive.
+test_that("a non-Eastern tz renders the same instant in that zone", {
+  # The suffix fixes the instant; tz only decides how it is displayed. UTC is
+  # 5 hours ahead of EST, so 14:30 EST must read 19:30 -- proof that tz is
+  # genuinely applied rather than the suffix being string-stripped.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+    (survey_id, response_id, date_submitted, is_deleted) VALUES
+    ('1', 'r1', '2026-01-15 14:30:00 EST', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir, tz = "UTC")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  submitted <- DBI::dbGetQuery(con2, "SELECT date_submitted FROM alchemer.pub.responses")$date_submitted
+  expect_equal(format(submitted), "2026-01-15 19:30:00")
+})
+
+test_that("date_updated/created_on/modified_on are kept as the account-local time Alchemer sent", {
+  # Regression test (code review): these three carry no timezone suffix and
+  # were read as UTC, then shifted into the configured zone -- which moved
+  # every one of them 4-5 hours earlier, into the previous evening, and made
+  # date_updated land *before* date_started for every response. Alchemer's own
+  # documented example (see inst/extdata/fixtures/surveyresponse_list.json)
+  # shows date_updated 6 seconds after an EST-suffixed date_submitted, on the
+  # same clock: they are already account-local, so there is nothing to shift.
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)
   DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys
     (survey_id, title, created_on, modified_on, is_deleted) VALUES
     ('1', 'S', '2026-01-15 19:00:00', '2026-07-15 18:00:00', FALSE)")
   DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
-    (survey_id, response_id, date_updated, is_deleted) VALUES
-    ('1', 'r1', '2026-01-15 19:00:00', FALSE)")
+    (survey_id, response_id, date_started, date_submitted, date_updated, is_deleted) VALUES
+    ('1', 'r1', '2026-01-15 18:59:50 EST', '2026-01-15 18:59:57 EST', '2026-01-15 19:00:00', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir)
+  pub_layer(dir, tz = "America/Toronto")
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
   surveys <- DBI::dbGetQuery(con2, "SELECT created_on, modified_on FROM alchemer.pub.surveys")
-  expect_equal(format(surveys$created_on), "2026-01-15 14:00:00") # UTC-5 (EST)
-  expect_equal(format(surveys$modified_on), "2026-07-15 14:00:00") # UTC-4 (EDT)
+  expect_equal(format(surveys$created_on), "2026-01-15 19:00:00")
+  expect_equal(format(surveys$modified_on), "2026-07-15 18:00:00")
 
-  responses <- DBI::dbGetQuery(con2, "SELECT date_updated FROM alchemer.pub.responses")
-  expect_equal(format(responses$date_updated), "2026-01-15 14:00:00")
+  responses <- DBI::dbGetQuery(con2, "
+    SELECT date_started, date_submitted, date_updated FROM alchemer.pub.responses")
+  expect_equal(format(responses$date_updated), "2026-01-15 19:00:00")
+  # The property that was violated before: a response cannot be updated
+  # before it was started or submitted.
+  expect_gt(responses$date_updated, responses$date_started)
+  expect_gt(responses$date_updated, responses$date_submitted)
+})
+
+test_that("raw timestamps stay exactly as Alchemer sent them, whatever tz is used", {
+  # ADR-003: the archive is verbatim. pub_layer() must never write back to raw.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+    (survey_id, response_id, date_submitted, date_updated, is_deleted) VALUES
+    ('1', 'r1', '2026-01-15 14:30:00 EST', '2026-01-15 14:30:05', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  pub_layer(dir, tz = "Australia/Sydney")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  raw <- DBI::dbGetQuery(con2, "SELECT date_submitted, date_updated FROM alchemer.raw.responses")
+  expect_equal(raw$date_submitted, "2026-01-15 14:30:00 EST")
+  expect_equal(raw$date_updated, "2026-01-15 14:30:05")
+})
+
+test_that("pub_layer() rejects a timezone that isn't an IANA name", {
+  dir <- withr::local_tempdir()
+  expect_error(pub_layer(dir, tz = "Eastern"), class = "alchemeR_config_error")
 })
 
 test_that("INSERT ... BY NAME rejects a column-name mismatch instead of silently misrouting", {

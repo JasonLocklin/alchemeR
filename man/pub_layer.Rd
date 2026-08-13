@@ -8,7 +8,8 @@ pub_layer(
   db = alchemer_db_path(),
   surveys = NULL,
   language = "English",
-  wide_views = TRUE
+  wide_views = TRUE,
+  tz = NULL
 )
 }
 \arguments{
@@ -24,6 +25,11 @@ directly into a generated SQL/JSONPath expression with no further
 escaping, so it is validated up front rather than quoted in context.}
 
 \item{wide_views}{Whether to (re)generate the per-survey wide views.}
+
+\item{tz}{Timezone for every \code{pub} timestamp. Defaults to \code{ALCHEMER_TZ},
+then the machine's own timezone (see \code{\link[=alchemer_tz]{alchemer_tz()}}). Set \code{ALCHEMER_TZ}
+explicitly for scheduled runs so the values written don't depend on
+which machine ran them.}
 }
 \value{
 Invisibly, the character vector of survey ids rebuilt.
@@ -37,13 +43,11 @@ language selection, reporting-value joins) belong instead of in \code{ingest()}.
 }
 \details{
 Every timestamp in \code{pub} (\code{pub.surveys.created_on}/\code{modified_on},
-\code{pub.responses.date_submitted}/\code{date_started}/\code{date_updated}) is
-normalised to America/Toronto wall-clock time, matching this package's
-userbase. \code{date_submitted}/\code{date_started} carry an explicit per-row
-EST/EDT suffix from Alchemer and convert exactly; \code{date_updated} and the
-two survey-level fields carry no timezone suffix at all and are assumed
-UTC (Alchemer's own documented default for \code{date_updated}, extended here
-to the other two for consistency) -- an account where that assumption
-doesn't hold would see those three columns off by a fixed number of
-hours, not scrambled or wrong-dated. See \code{vignette("data-model")}.
+\code{pub.responses.date_submitted}/\code{date_started}/\code{date_updated}) is presented
+as wall-clock time in \code{tz}. \code{date_submitted}/\code{date_started} carry an
+explicit per-row EST/EDT suffix from Alchemer, so they are parsed into an
+exact instant and rendered in \code{tz}; \code{date_updated} and the two
+survey-level fields carry no suffix and are already in the account's own
+local time, so they are cast unchanged. \code{raw} is never converted at all.
+See \code{vignette("data-model")}.
 }

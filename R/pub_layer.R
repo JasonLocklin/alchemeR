@@ -18,31 +18,39 @@ title_sql <- function(column, language) {
   glue::glue("json_extract_string({column}, '$.\"{language}\"')")
 }
 
-# All pub timestamps are normalised to America/Toronto wall-clock time --
-# the userbase (students at a Toronto institution) is single-timezone, and a
-# consistent local time throughout `pub` is much easier to work with than a
-# mix of ambiguous naive timestamps. Two source shapes need two different
-# treatments, both ending at the same AT TIME ZONE 'America/Toronto' step:
+# `raw` keeps every timestamp exactly as Alchemer sent it (ADR-003); `pub`
+# presents them all as wall-clock time in one timezone, alchemer_tz()
+# (`ALCHEMER_TZ`), so analysts never have to reason about mixed source
+# shapes. Alchemer sends two shapes, needing two different treatments:
 #
 # - date_submitted/date_started carry an explicit, per-row EST or EDT
 #   suffix -- the exact Eastern-time abbreviation for that date -- so they
-#   parse into an unambiguous instant with no assumption of our own
-#   (est_edt_timestamp_sql()). Because EST/EDT *are* Toronto's own standard/
-#   daylight offsets, the resulting Toronto wall-clock value is numerically
-#   identical to the naive value Alchemer sent, just parsed rigorously
-#   rather than string-munged.
-# - date_updated/created_on/modified_on carry no timezone suffix at all.
-#   Per Alchemer's own docs (relevant to date_updated, and the closest
-#   documented guidance available for the survey-level fields, which say
-#   nothing on the matter) these are "typically UTC, but may vary by
-#   account settings" -- an assumption, not a certainty. utc_timestamp_sql()
-#   documents that assumption at the point it's made; an account where it
-#   doesn't hold would see these three columns off by a fixed number of
-#   hours, not scrambled or wrong-dated.
+#   parse into an unambiguous instant with no assumption of our own, and
+#   then convert to the configured zone (tz_timestamp_sql). For an Eastern
+#   ALCHEMER_TZ the result is numerically identical to the string Alchemer
+#   sent, just parsed rigorously rather than string-munged; for any other
+#   zone it is the correct local rendering of the same instant.
+# - date_updated/created_on/modified_on carry no timezone suffix at all,
+#   and are already in the account's own local time -- Alchemer's
+#   documented single-response example makes this plain:
+#     date_started   2025-12-09 17:15:30 EST
+#     date_submitted 2025-12-09 17:15:37 EST
+#     date_updated   2025-12-09 17:15:43       <- no suffix, same clock
+#   6 seconds after submission, not 5 hours before it. So there is nothing
+#   to convert: they are cast straight to TIMESTAMP (naive_timestamp_sql).
+#   Reading them as UTC instead -- which Alchemer's docs describe as
+#   "typically UTC, but may vary by account settings", while also warning
+#   not to hardcode it -- shifted every one of them into the previous
+#   evening and made date_updated < date_started for every response.
+#
+# This holds while the Alchemer account's timezone and ALCHEMER_TZ agree,
+# which is the case they exist for. An account reporting in a *different*
+# zone from the analysts reading `pub` would need a second knob for the
+# source zone; raw.responses.date_updated stays verbatim either way.
 
 # For date_submitted/date_started: parse using each row's own EST/EDT
-# suffix into an exact instant, then convert to Toronto wall-clock time.
-est_edt_timestamp_sql <- function(column) {
+# suffix into an exact instant, then render it in `tz`.
+est_edt_timestamp_sql <- function(column, tz) {
   glue::glue(
     "(CASE
         WHEN {column} LIKE '% EST' THEN
@@ -50,17 +58,14 @@ est_edt_timestamp_sql <- function(column) {
         WHEN {column} LIKE '% EDT' THEN
           TRY_CAST(regexp_replace({column}, ' EDT$', '') || '-04' AS TIMESTAMPTZ)
         ELSE NULL
-      END) AT TIME ZONE 'America/Toronto'"
+      END) AT TIME ZONE {DBI::dbQuoteString(DBI::ANSI(), tz)}"
   )
 }
 
-# For date_updated/created_on/modified_on: no timezone suffix in the source
-# data, assumed UTC (see the comment above this function), then converted to
-# Toronto wall-clock time.
-utc_timestamp_sql <- function(column) {
-  glue::glue(
-    "(TRY_CAST({column} AS TIMESTAMP) AT TIME ZONE 'UTC') AT TIME ZONE 'America/Toronto'"
-  )
+# For date_updated/created_on/modified_on: already account-local wall clock
+# (see the comment above), so cast and leave the reading alone.
+naive_timestamp_sql <- function(column) {
+  glue::glue("TRY_CAST({column} AS TIMESTAMP)")
 }
 
 # ASCII, lowercase, underscore-separated, length-capped -- for both the wide
@@ -74,7 +79,7 @@ slugify <- function(x, max_len = 40) {
   ifelse(nzchar(x), x, "x")
 }
 
-rebuild_pub_surveys <- function(con, survey_ids) {
+rebuild_pub_surveys <- function(con, survey_ids, tz) {
   ids <- id_list_sql(con, survey_ids)
   DBI::dbExecute(con, glue::glue(
     "DELETE FROM {ducklake_alias}.pub.surveys WHERE survey_id IN ({ids})"
@@ -89,15 +94,15 @@ rebuild_pub_surveys <- function(con, survey_ids) {
   DBI::dbExecute(con, glue::glue(
     "INSERT INTO {ducklake_alias}.pub.surveys BY NAME
      SELECT survey_id, title, type, status,
-            {utc_timestamp_sql('created_on')} AS created_on,
-            {utc_timestamp_sql('modified_on')} AS modified_on,
+            {naive_timestamp_sql('created_on')} AS created_on,
+            {naive_timestamp_sql('modified_on')} AS modified_on,
             team, is_deleted
      FROM {ducklake_alias}.raw.surveys
      WHERE survey_id IN ({ids})"
   ))
 }
 
-rebuild_pub_survey <- function(con, survey_id, language) {
+rebuild_pub_survey <- function(con, survey_id, language, tz) {
   qs <- DBI::dbQuoteString(con, survey_id)
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.questions WHERE survey_id = {qs}"))
@@ -123,9 +128,9 @@ rebuild_pub_survey <- function(con, survey_id, language) {
     "INSERT INTO {ducklake_alias}.pub.responses BY NAME
      SELECT survey_id, response_id, status,
             (is_test_data = '1') AS is_test_data,
-            {est_edt_timestamp_sql('date_submitted')} AS date_submitted,
-            {est_edt_timestamp_sql('date_started')} AS date_started,
-            {utc_timestamp_sql('date_updated')} AS date_updated,
+            {est_edt_timestamp_sql('date_submitted', tz)} AS date_submitted,
+            {est_edt_timestamp_sql('date_started', tz)} AS date_started,
+            {naive_timestamp_sql('date_updated')} AS date_updated,
             session_id, language, link_id, contact_id,
             TRY_CAST(response_time AS INTEGER) AS response_time,
             is_deleted
@@ -243,15 +248,13 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #' language selection, reporting-value joins) belong instead of in `ingest()`.
 #'
 #' Every timestamp in `pub` (`pub.surveys.created_on`/`modified_on`,
-#' `pub.responses.date_submitted`/`date_started`/`date_updated`) is
-#' normalised to America/Toronto wall-clock time, matching this package's
-#' userbase. `date_submitted`/`date_started` carry an explicit per-row
-#' EST/EDT suffix from Alchemer and convert exactly; `date_updated` and the
-#' two survey-level fields carry no timezone suffix at all and are assumed
-#' UTC (Alchemer's own documented default for `date_updated`, extended here
-#' to the other two for consistency) -- an account where that assumption
-#' doesn't hold would see those three columns off by a fixed number of
-#' hours, not scrambled or wrong-dated. See `vignette("data-model")`.
+#' `pub.responses.date_submitted`/`date_started`/`date_updated`) is presented
+#' as wall-clock time in `tz`. `date_submitted`/`date_started` carry an
+#' explicit per-row EST/EDT suffix from Alchemer, so they are parsed into an
+#' exact instant and rendered in `tz`; `date_updated` and the two
+#' survey-level fields carry no suffix and are already in the account's own
+#' local time, so they are cast unchanged. `raw` is never converted at all.
+#' See `vignette("data-model")`.
 #'
 #' @param db Application database directory. Defaults to [alchemer_db_path()].
 #' @param surveys If supplied, only these survey ids are rebuilt. Otherwise
@@ -262,9 +265,18 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #'   directly into a generated SQL/JSONPath expression with no further
 #'   escaping, so it is validated up front rather than quoted in context.
 #' @param wide_views Whether to (re)generate the per-survey wide views.
+#' @param tz Timezone for every `pub` timestamp. Defaults to `ALCHEMER_TZ`,
+#'   then the machine's own timezone (see [alchemer_tz()]). Set `ALCHEMER_TZ`
+#'   explicitly for scheduled runs so the values written don't depend on
+#'   which machine ran them.
 #' @return Invisibly, the character vector of survey ids rebuilt.
 #' @export
-pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "English", wide_views = TRUE) {
+pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "English",
+                      wide_views = TRUE, tz = NULL) {
+  # Routed through alchemer_tz() even when supplied directly, so an explicit
+  # argument is validated against the IANA database exactly like the
+  # environment variable is -- `tz` reaches SQL as a bare literal.
+  tz <- alchemer_tz(tz)
   if (!grepl("^[A-Za-z0-9 _-]+$", language)) {
     cli::cli_abort(
       "`language` must contain only letters, digits, spaces, '-', or '_'; got {.val {language}}.",
@@ -283,14 +295,14 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
     return(invisible(character(0)))
   }
 
-  rebuild_pub_surveys(con, survey_ids)
+  rebuild_pub_surveys(con, survey_ids, tz)
   titles <- DBI::dbGetQuery(con, glue::glue(
     "SELECT survey_id, title FROM {ducklake_alias}.pub.surveys
      WHERE survey_id IN ({id_list_sql(con, survey_ids)})"
   ))
 
   for (survey_id in survey_ids) {
-    rebuild_pub_survey(con, survey_id, language)
+    rebuild_pub_survey(con, survey_id, language, tz)
     if (wide_views) {
       # or_default(), not %||%: a survey with no title, or an id that isn't
       # in raw.surveys at all, gives NA here rather than NULL, which %||%

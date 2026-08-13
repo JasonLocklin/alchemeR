@@ -13,6 +13,18 @@ ALCHEMER_API_SECRET=
 # scheduled job, since its working directory is not guaranteed.
 ALCHEMER_DB=
 
+# Timezone for the publication layer. pub_layer() presents every pub
+# timestamp as wall-clock time in this zone, and reads Alchemer's unsuffixed
+# timestamps (date_updated, created_on, modified_on) as already being in it --
+# so it should match your Alchemer account's timezone setting. `raw` is never
+# converted: it keeps whatever string the API sent.
+#
+# SET THIS EXPLICITLY for a scheduled job. Left unset it falls back to the
+# machine's own timezone, which would make pub's values depend on which
+# machine last ran pub_layer() (a laptop in Toronto and a server in UTC would
+# write different numbers into the same shared database).
+ALCHEMER_TZ=America/Toronto
+
 # Optional -- defaults shown
 # Regional API base domain. See https://apihelp.alchemer.com/help/api-base-domains
 #   United States: api.alchemer.com (default)

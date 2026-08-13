@@ -109,7 +109,10 @@ test_that("expunge(before_date =) is DST-correct across an EST/EDT boundary, and
   version_before <- current_snapshot(con)
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  expunge(dir, before_date = as.Date("2024-07-01"))
+  # tz pinned rather than left to ALCHEMER_TZ/Sys.timezone(): the whole point
+  # of this test is a one-hour margin either side of a *Toronto* midnight, so
+  # a machine running in UTC would otherwise keep the "before" row and fail.
+  expunge(dir, before_date = as.Date("2024-07-01"), tz = "America/Toronto")
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -163,7 +166,7 @@ test_that("expunge() removes the pub copy of the data too, not just raw", {
   DBI::dbDisconnect(con, shutdown = TRUE)
 
   # before_date: only the matching response leaves, from pub as well as raw
-  expunge(dir, before_date = as.Date("2024-01-01"))
+  expunge(dir, before_date = as.Date("2024-01-01"), tz = "America/Toronto")
   con <- alchemer_db(dir, read_only = TRUE)
   expect_equal(DBI::dbGetQuery(con, "SELECT answer FROM alchemer.pub.answers")$answer, "SECRET-2")
   expect_equal(DBI::dbGetQuery(con, "SELECT response_id FROM alchemer.pub.responses")$response_id, "r2")

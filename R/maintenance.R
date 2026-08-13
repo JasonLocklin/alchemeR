@@ -92,9 +92,11 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
 #'   its `raw.surveys` record) is removed.
 #' @param before_date If supplied, `raw.responses` rows with
 #'   `date_submitted` earlier than this are removed, across every survey.
-#'   Interpreted as an America/Toronto calendar date (midnight local time);
+#'   Interpreted as a calendar date in `tz` (midnight local time);
 #'   `date_submitted` itself is parsed using its own per-row EST/EDT suffix,
 #'   so the comparison is DST-correct without guessing at a fixed offset.
+#' @param tz Timezone `before_date` is read in. Defaults to `ALCHEMER_TZ`,
+#'   then the machine's own timezone (see [alchemer_tz()]).
 #' @details
 #' The matching `pub` rows go too. `pub.responses`/`pub.answers` hold a
 #' *second copy* of the answer text (`pub.answers.answer` is the verbatim
@@ -104,7 +106,9 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
 #' [load_pub_layer()] run.
 #' @return Invisibly, `TRUE`.
 #' @export
-expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL) {
+expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL,
+                    tz = NULL) {
+  tz <- alchemer_tz(tz) # validated even when supplied: it reaches SQL as a literal
   if (is.null(survey_id) && is.null(before_date)) {
     cli::cli_abort("Supply survey_id or before_date.", class = "alchemeR_config_error")
   }
@@ -134,10 +138,11 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
         # into an exact instant with no DST calendar lookup of our own,
         # just by honoring the offset Alchemer already told us (EST/EDT
         # are always -05:00/-04:00; there is no ambiguity to resolve).
-        # before_date is interpreted as America/Toronto midnight, matching
-        # how a retention cutoff is actually read and set.
+        # before_date is interpreted as midnight in `tz`, matching how a
+        # retention cutoff is actually read and set.
         cutoff <- glue::glue(
-          "(TIMESTAMP {DBI::dbQuoteString(con, format(as.Date(before_date)))} AT TIME ZONE 'America/Toronto')"
+          "(TIMESTAMP {DBI::dbQuoteString(con, format(as.Date(before_date)))}",
+          " AT TIME ZONE {DBI::dbQuoteString(con, tz)})"
         )
         DBI::dbExecute(con, glue::glue(
           "DELETE FROM {ducklake_alias}.raw.responses

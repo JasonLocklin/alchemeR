@@ -37,6 +37,13 @@
   external analytics database over a plain `DBI` connection -- SQL Server via
   `odbc`, or anything else `DBI` supports. See
   `inst/scripts/etl_pipeline.R` and `vignette("scheduling")`.
+* `pub` timestamps are presented in the timezone named by the new `ALCHEMER_TZ`
+  variable (or `pub_layer(tz = )`), defaulting to the machine's own timezone --
+  set it explicitly for scheduled runs. `raw` is never converted. Alchemer's
+  unsuffixed timestamps (`date_updated`, `created_on`, `modified_on`) are read as
+  already being in that zone, which is what Alchemer's own documented example
+  shows; `EST`/`EDT`-suffixed fields are parsed via their real offset and
+  rendered in it.
 * New required configuration: `ALCHEMER_DB` (application database directory).
   `ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET` are now read from the environment
   by default across all functions, rather than being passed as bare arguments.

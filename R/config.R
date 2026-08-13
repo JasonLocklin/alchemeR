@@ -83,6 +83,39 @@ alchemer_rpm <- function(rpm = NULL) {
   as.numeric(rpm %||% env_or("ALCHEMER_RPM", "100"))
 }
 
+#' Timezone for the publication layer
+#'
+#' The timezone `pub`'s timestamps are presented in, and the timezone
+#' Alchemer's own unsuffixed timestamps are read as. `raw` is never
+#' converted (ADR-003) -- it keeps whatever string the API sent.
+#'
+#' Defaults to `ALCHEMER_TZ`, then to the machine's own timezone
+#' (`Sys.timezone()`). **Set it explicitly for a scheduled job**: leaving it
+#' unset makes `pub` depend on the timezone of whichever machine last ran
+#' [pub_layer()], so a laptop and a UTC server would write different values
+#' into the same shared database.
+#'
+#' @param tz Override. Defaults to `Sys.getenv("ALCHEMER_TZ")`.
+#' @return A single IANA timezone name, e.g. `"America/Toronto"`.
+#' @keywords internal
+alchemer_tz <- function(tz = NULL) {
+  # Sys.timezone() returns NA when the OS zone can't be determined, so it
+  # needs or_default() rather than %||% behind it.
+  tz <- tz %||% env_or("ALCHEMER_TZ", or_default(Sys.timezone(), "UTC"))
+  # Validated against the IANA database rather than quoted in context: this
+  # reaches SQL as a bare `AT TIME ZONE '<tz>'` literal, and an unrecognised
+  # name is a configuration mistake worth naming up front rather than a
+  # confusing DuckDB error thrown once per generated statement.
+  if (!isTRUE(tz %in% OlsonNames())) {
+    cli::cli_abort(c(
+      "{.val {tz}} is not a known timezone name.",
+      "i" = "Set {.envvar ALCHEMER_TZ} to an IANA name such as {.val America/Toronto}.",
+      "i" = "See {.run OlsonNames()} for the full list."
+    ), class = "alchemeR_config_error")
+  }
+  tz
+}
+
 #' Maximum staleness backstop for survey refresh
 #'
 #' A correctness backstop, not a freshness setting (ADR-004): change
