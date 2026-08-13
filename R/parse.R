@@ -64,10 +64,10 @@ parse_surveys <- function(items) {
 #'
 #' `def` is the raw result of `alchemer_fetch(client, "survey/{id}")` --
 #' pages, questions, and options nested inline. `varname` is absent from
-#' this tree (it is only returned by the separate `surveyquestion` list, per
-#' ADR discussion in plan.md), so it is merged in from `varnames`, a named
-#' character vector `question_id -> varname` built by the caller from that
-#' endpoint.
+#' this tree -- it is only returned by the separate `surveyquestion` list, which
+#' is the sole reason that extra request per survey exists -- so it is merged in
+#' from `varnames`, a named character vector `question_id -> varname` built by
+#' the caller from that endpoint.
 #'
 #' @param survey_id Survey id (kept alongside `def$id` in case of mismatch).
 #' @param def The parsed definition tree.

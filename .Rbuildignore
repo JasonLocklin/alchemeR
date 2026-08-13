@@ -5,11 +5,10 @@
 ^\.github$
 ^\.git$
 ^\.claude$
-^Claude.*$
+(?i)^claude
 ^plan.*$
 ^docs$
-^ingest_spec\.md$
-^code_review\.md$
+^vignettes/articles$
 ^_pkgdown\.yml$
 ^pkgdown$
 ^\.lintr$

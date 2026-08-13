@@ -19,9 +19,9 @@ A list with \code{definition}, \code{pages}, \code{questions}, \code{options} ti
 \description{
 \code{def} is the raw result of \code{alchemer_fetch(client, "survey/{id}")} --
 pages, questions, and options nested inline. \code{varname} is absent from
-this tree (it is only returned by the separate \code{surveyquestion} list, per
-ADR discussion in plan.md), so it is merged in from \code{varnames}, a named
-character vector \code{question_id -> varname} built by the caller from that
-endpoint.
+this tree -- it is only returned by the separate \code{surveyquestion} list, which
+is the sole reason that extra request per survey exists -- so it is merged in
+from \code{varnames}, a named character vector \code{question_id -> varname} built by
+the caller from that endpoint.
 }
 \keyword{internal}

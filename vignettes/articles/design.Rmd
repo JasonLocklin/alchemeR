@@ -1,0 +1,783 @@
+---
+title: "Design and decision record"
+output: rmarkdown::html_vignette
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+**Audience: whoever maintains this package next, including a future me.** Not users —
+they want `vignette("getting-started")`, `vignette("data-model")`, and
+`vignette("scheduling")`.
+
+This is the institutional memory: what the package is for, what was decided and why, what
+was tried and rejected, what was measured, what is deliberately not true, and what to be
+careful of. It consolidates the original specification, the implementation plan and its
+architecture decision records, and two rounds of code review. Those working documents no
+longer exist separately; this is their successor.
+
+Nothing here is a promise about current behaviour. Where this article and the code
+disagree, the code wins and this article has a bug.
+
+---
+
+# 1. Why the package exists
+
+## Before
+
+`alchemeR` was three functions that queried the Alchemer API and returned data into an R
+session. Every analysis script therefore depended on continued access to the Alchemer
+account: migrating away, or deleting a survey, broke scripts. Data-loss prevention was
+entirely Alchemer's problem. It was also slow — analysts waited out rate-limited,
+paginated downloads on every run — and `fetch_survey()` used a page-to-file-then-reload
+approach to cope.
+
+## After
+
+`ingest()` copies the whole account into a local DuckLake database on a schedule.
+Analysis reads that. Two things fall out:
+
+- **An archive.** Losing the Alchemer account, or a survey, no longer costs analytics
+  capacity (subject to §10).
+- **A pipeline.** `pub_layer()` builds tidy tables; `load_pub_layer()` pushes them to an
+  analytics database. In ETL terms the local stages are **ELT** — land verbatim,
+  transform in place — followed by a full-overwrite Load.
+
+## Who uses it
+
+**Data engineers** schedule a script that ingests, builds the publication layer, and
+pushes it to source tables on an analytics database, then transform further with dbt,
+including survey-specific logic this package deliberately refuses to contain.
+
+**R analysts** either maintain the application database themselves (laptop or fileserver)
+or consume one someone else maintains. They query `pub` as step one of their own cleaning.
+They are tidyverse users and are happy with tidy data; the wide per-survey shape exists
+because it is what a survey analyst expects to see. Rarely, they use time travel to
+investigate a data-quality question, or call the direct-API functions to see the live
+state during an active collection.
+
+## Scale and context that shaped every decision
+
+This is a small research department, not a data platform team. It matters:
+
+- Fewer than ~100 surveys. Most have hundreds of responses; a few reach ~100k.
+- Most surveys are static — closed, or simply not being promoted. Very little changes
+  between runs.
+- A big push may add tens of thousands of responses in a day to one survey while
+  everything else is quiet. Long-running surveys may get 1–2 responses a day and must not
+  balloon storage.
+- **Alchemer tables are not immutable.** A response in progress changes as the respondent
+  works through it; a closed window can finalise a response days later.
+- The department may be *required* to delete or expire survey data in Alchemer, and that
+  must not destroy the archive.
+- Everything is datestamped, and research data must be expungeable by age or date.
+- Alchemer defends its API with pagination and rate limits. `ingest()` is a scheduled job,
+  so it can afford to be polite.
+- Download efficiency is a *secondary* concern. Re-downloading a large survey only happens
+  while it is actively collecting.
+- **Unintended data loss or corruption is the primary risk.** Where freshness and
+  correctness conflict, correctness wins. Every design decision below resolves in that
+  direction, and if you are weighing a change, resolve it that way too.
+
+## Stated goals
+
+Reliable, reproducible ingestion. Boring infrastructure. Minimal, maintainable, auditable
+code — well-established libraries, few lines, good comments. Automatic discovery of new
+surveys. No survey-specific logic. No row-level watermarking. Survey-level refreshes. A
+persistent local application database that is a complete archive, subject to §10.
+
+---
+
+# 2. Non-negotiables
+
+The short list. Breaking any of these is a design change, not a refactor.
+
+1. **Full survey-level refresh only.** Change detection decides *when* a survey refreshes;
+   it must never decide *which rows* are stored (ADR-004). Say so in comments wherever the
+   probe values are used.
+2. **`raw` is all VARCHAR/JSON.** No coercion, renaming, or language selection at ingest.
+   A new question type must never be able to fail an ingest (ADR-003).
+3. **Flag deleted rows, never remove them** (ADR-005). Log outside the refresh transaction
+   (ADR-007).
+4. **Assert integrity after every write** — DuckLake has no constraints to lean on
+   (ADR-006).
+5. **No survey-specific logic anywhere.** Universal processing only.
+6. **Throttle, retry, and paginate with `httr2` built-ins**, never hand-rolled loops
+   (ADR-011). Never let a credentialed URL reach a log, an error message, or
+   `jsonlite::fromJSON()`.
+
+---
+
+# 3. Architecture
+
+## On disk
+
+```
+$ALCHEMER_DB/
+  catalog.sqlite      # the DuckLake catalog
+  data/               # Parquet data files, written and compacted by DuckDB
+```
+
+Attached as catalog `alchemer`, with three schemas.
+
+| Schema | Purpose | Written by | Typed? |
+|---|---|---|---|
+| `raw` | The archive. Verbatim, never edited. | `ingest()` | No — VARCHAR/JSON only |
+| `pub` | Tidy tables for analysis. Rebuildable, disposable. | `pub_layer()` | Yes |
+| `meta` | Operational records: runs, decisions, loads, assertions. | both | Yes |
+
+## `raw` — archival, verbatim, untyped
+
+Every table carries `ingested_at`, `run_id`, and where deletion is detectable
+`is_deleted` and `deleted_detected_at`. Every row carries the source object verbatim in a
+`payload` JSON column (minus redacted PII), so anything not modelled explicitly survives.
+
+| Table | Grain |
+|---|---|
+| `raw.surveys` | survey — the discovery record |
+| `raw.survey_definitions` | survey — the entire `GET /v5/survey/{id}` payload, the replay artefact |
+| `raw.survey_pages` | survey × page |
+| `raw.survey_questions` | survey × question — everything needed to interpret a response |
+| `raw.survey_question_options` | survey × question × option — coded and reporting values |
+| `raw.responses` | survey × response — answers verbatim in `survey_data` |
+| `raw.survey_statistics` | survey × question |
+| `raw.survey_campaigns` | survey × campaign |
+
+There is deliberately **no** normalised answer table in `raw` — it is derivable from
+`survey_data`, and lives in `pub` where it is actually consumed.
+
+## `meta` — operational
+
+| Table | Grain |
+|---|---|
+| `meta.runs` | one `ingest()` run — status, counts, requests made |
+| `meta.run_events` | run × survey × phase — the decision and its reason, then the outcome |
+| `meta.survey_state` | survey — change-detection state and consecutive failures |
+| `meta.integrity_checks` | assertion result, passes **and** failures |
+| `meta.loads` | one `load_pub_layer()` run, and the tables it wrote |
+
+## `pub` — publication
+
+`pub.surveys`, `pub.questions`, `pub.options`, `pub.responses`, `pub.answers` (one row per
+response × question, labels denormalised in so ordinary analysis needs no joins), plus a
+generated `pub.wide_<title_slug>_<survey_id>` **view** per survey.
+
+## `ingest()` control flow
+
+```
+open db, assert DuckLake spec >= 1.0, ensure schema
+log meta.runs start
+discover: GET /v5/survey (paginated) -> merge raw.surveys; flag vanished surveys
+for each survey:
+    probe: 1 request -> (total_count, max date_updated)
+    skip unless a clause of ADR-004 fires   (log the decision and its reason)
+    BEGIN                                   # before any network call -- see below
+      fetch definition tree (1) + questions list (1) [+ campaigns (1) + statistics (1)]
+            + ALL responses (paginated, 500/page)
+      merge each raw table for this survey_id; flag vanished responses
+      update meta.survey_state
+      run integrity assertions -> throw on failure
+    COMMIT or ROLLBACK                      # one snapshot per refreshed survey per run
+    record assertions and outcome           # outside the transaction, either way
+log meta.runs finish
+invisibly return a tibble: one row per survey with decision, counts, timings, status
+```
+
+`BEGIN` happens *before* the network calls deliberately: everything — fetching, parsing,
+writing — runs inside one `tryCatch`, so a broken API response reaches the same rollback
+and failure-bookkeeping path as a bad write. Fetching first would silently skip
+`consecutive_failures` on a fetch error.
+
+One survey's failure never blocks the others, and every survey already committed stays
+committed.
+
+## Public surface
+
+```r
+# Pipeline
+ingest(db, surveys, force, include, full_sweep_days, rpm, dry_run, client)
+pub_layer(db, surveys, language, wide_views, tz)
+load_pub_layer(dest_con, db, tables, schema)
+load_pipeline_health(dest_con, db, table, schema)
+
+# Reading
+alchemer_db(db, read_only)      # DBI connection, extensions loaded, catalog attached
+alchemer_tbl(con, "pub.responses")
+survey_wide(con, survey_id)
+
+# Maintenance
+db_status(db); db_check(db); compact(db)
+expire_history(db, older_than); expunge(db, survey_id, before_date, tz)
+
+# Direct API (return tibbles, never write files)
+alchemer_surveys(); alchemer_survey(id); alchemer_questions(id)
+alchemer_responses(id, ...); alchemer_campaigns(id); alchemer_statistics(id)
+
+# Deprecated shims, removed in 2.0.0
+all_surveys(); fetch_survey(); fetch_data_dictionary()
+```
+
+## Configuration
+
+Environment variables only; nothing secret in project source. `ALCHEMER_API_SECRET` may
+also be passed as an argument so `keyring` users can supply it at runtime. Shipped as
+`inst/extdata/Renviron.example`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ALCHEMER_API_TOKEN` | — | required |
+| `ALCHEMER_API_SECRET` | — | required (or argument) |
+| `ALCHEMER_DB` | — | application database directory |
+| `ALCHEMER_TZ` | machine timezone | timezone `pub` timestamps are presented in |
+| `ALCHEMER_DOMAIN` | `api.alchemer.com` | regional base domain |
+| `ALCHEMER_RPM` | `100` | throttle ceiling (account limit is 240/min) |
+| `ALCHEMER_FULL_SWEEP_DAYS` | `90` | maximum staleness backstop |
+
+Credentials travel as query parameters because the API requires it, so **full request URLs
+must never reach a log table, an error message, or console output** — method, path, and
+status only.
+
+---
+
+# 4. Architecture decision records
+
+Numbered, dated, and immutable: a decision that changes gets a new record and the old one
+is marked superseded, so both the original reasoning and the reason it was overturned
+survive. Do not edit a superseded ADR into agreement with the code.
+
+## ADR-001 — DuckLake v1.0 with a DuckDB-file catalog
+
+> **Superseded by ADR-012 (2026-08-13).** Kept for its reasoning about the format itself,
+> which still stands; only the catalog backend changed.
+
+**Decision.** `ALCHEMER_DB` holds `catalog.ducklake` (an ordinary DuckDB file) and `data/`
+(Parquet), attached via the `ducklake` extension.
+
+**Consequences.** Requires `duckdb (>= 1.5.2)`; `alchemer_db()` asserts the catalog's
+stamped spec version and refuses a 0.x catalog. One writer at a time — while `ingest()`
+runs, other processes cannot even read. Accepted at the time; `ingest()` fails fast with
+an actionable message when the lock is held. A SQLite catalog would permit concurrent
+readers (verified) but was rejected as a non-standard catalog choice.
+
+*That last sentence was the mistake. See ADR-012.*
+
+## ADR-002 — History comes from snapshots; there is no separate archival layer
+
+**Decision.** One current-state row per entity in `raw`. Point-in-time queries use
+`AT (TIMESTAMP => ...)`; change forensics use `ducklake_table_changes()`.
+
+**Rejected:** the original spec's separate archival layer and a `raw_api_payloads` table.
+Both re-implement, at ~3× storage, what the format already provides. Verbatim fidelity is
+kept instead in a `payload` JSON column on each row.
+
+**Consequences.** History is only as deep as the retention policy — which is the point.
+Retention becomes one `expire_history()` call rather than a bespoke pruning job.
+
+## ADR-003 — `raw` is untyped and verbatim; `pub` does all typing
+
+**Decision.** Every `raw` column is VARCHAR or JSON. No coercion, renaming, language
+selection, or boolean parsing at ingest.
+
+**Rationale.** The API's typing is genuinely inconsistent: `is_test_data` as `"1"`/`"0"`,
+booleans as `"True"`/`"False"`, `results_per_page` sometimes a string, titles as
+`{"English": "..."}` maps, `data_quality` as `[]`-or-object, a statistics key literally
+named `"total responses"` with a space. Coercing at ingest means a new question type or a
+changed representation can *fail the ingest* or silently mangle data. Untyped `raw` makes
+ingestion unable to fail on data shape and puts every judgement call in `pub_layer()`,
+which is cheap to re-run and safe to fix retroactively.
+
+## ADR-004 — Full survey-level refresh; watermarks trigger, they never select
+
+**Decision.** When a survey is selected, download **all** of its responses.
+
+**Why no incremental delta by `date_updated`.** It cannot be certified safe, and certainty
+was the requirement:
+
+1. `date_updated` carries **no timezone suffix** and is documented as "typically UTC, but
+   may vary by account settings." A systematic offset silently skips rows.
+2. Newly submitted data can take **up to 5 minutes** to appear. A row committed before the
+   cut-off but visible after it is missed *permanently*.
+3. Identical GETs are **cached for 60 seconds**, so a retried probe can return stale counts.
+4. **Deleted responses are silently excluded** from list results, so a delta can never
+   observe a deletion.
+5. A missed row is a permanent, invisible hole that nothing downstream can reconcile.
+
+Under full refresh all five degrade to "this survey refreshed later than ideal" and
+self-heal next run. Cost is acceptable: most surveys are small, and re-downloading a
+100k-response survey is ~200 requests, only while it is actively collecting.
+
+**Change detection is separate and deliberately untrusted.** A survey refreshes when any
+of: it has never succeeded; `modified_on` differs; the probe pair
+`(total_count, max(date_updated))` differs; `last_successful_refresh` is older than
+`full_sweep_days` (default 90); or the caller passed `surveys =` / `force = TRUE`.
+
+The probe is one request: `surveyresponse?resultsperpage=1&order_by=-date_updated`. It
+catches new responses, edits (any edit bumps `date_updated`), and deletions (`total_count`
+falls). ~100 surveys ⇒ ~100 requests per run.
+
+`full_sweep_days` is a **correctness backstop, not a freshness knob** — it bounds how long
+an undetected change could persist, which is what makes every hint above optional for
+correctness.
+
+## ADR-005 — Deletions are flagged by set difference during a full refresh
+
+> **Amended by ADR-013 (2026-08-13):** merge instead of replace. The flagging rule below
+> is unchanged; only the write mechanism changed.
+
+**Decision.** A refresh does not blind-delete. Rows stored but absent from the fetch are
+flagged `is_deleted = TRUE` with `deleted_detected_at` (responses and surveys), or deleted
+(definition, statistics, and campaign rows — derived metadata, not research data). The
+same rule applies at survey level: a survey that vanishes from discovery is flagged.
+
+**Consequences.** Full refresh is the only mechanism that can detect a deletion at all — a
+second, independent reason ADR-004 stands.
+
+## ADR-006 — Integrity is asserted after every write, because DuckLake has no constraints
+
+**Decision.** DuckLake supports no primary key, unique, foreign key, or check constraints.
+Uniqueness is therefore a property of our write pattern and must be asserted, not assumed.
+After each survey, `ingest()` checks and records in `meta.integrity_checks`:
+
+- no duplicate rows at the natural key of `raw.responses`, `raw.surveys`,
+  `raw.survey_questions`, or `raw.survey_question_options`;
+- the live response count equals the count the refresh reported fetching;
+- every `raw.responses.survey_id` exists in `raw.surveys`;
+- every question referenced by `raw.survey_question_options` exists.
+
+A failure rolls that survey back, records loudly, and does not stop the run. `db_check()`
+exposes the same assertions on demand.
+
+`response_count_matches_fetch` is load-bearing: it is what catches a broken merge
+(ADR-013), and it is a *check*, never a filter.
+
+## ADR-007 — The run log is written outside the refresh transaction
+
+**Decision.** `meta.run_events` and `meta.integrity_checks` rows are committed in their own
+transactions, never inside the survey transaction they describe.
+
+**Rationale.** Logging inside the transaction destroys the failure record on rollback —
+exactly the records someone monitoring for failures needs. Log intent before, outcome
+after, pass or fail.
+
+## ADR-008 — `pub` provides both tidy-long and wide-per-survey shapes
+
+**Decision.** `pub_layer()` builds the typed tables plus one **view** per survey,
+`pub.wide_<title_slug>_<survey_id>` — e.g. `pub.wide_q1_customer_feedback_8611799`. The
+slug is a lowercased, underscore-separated, ASCII-transliterated, length-capped title; the
+id suffix guarantees uniqueness and gives a stable key back to `pub.surveys`.
+
+Titles change, so each run **drops every existing `wide_*_<survey_id>` view for the survey
+before recreating it**, leaving no orphan behind.
+
+*Verified:* a wide view needs an explicit pivot list — `PIVOT ... ON qid IN ('2','3',...)`
+— because DuckDB refuses to store a dynamic PIVOT in a view. `pub_layer()` generates that
+list from the questions, so views track question changes and cost no storage.
+`survey_wide()` does the same pivot on demand.
+
+Two questions sharing a `shortname` get the question id suffixed onto the second one's
+column name.
+
+## ADR-009 — Deliberate ingest exclusions
+
+- **File-upload attachment bytes are not downloaded.** The answer value and filename are
+  preserved, so the response record is complete, but the bytes are not fetched and the
+  pre-signed URLs (which expire, default 300s) are not chased.
+- **Respondent IP address, latitude/longitude, city, region, postal, DMA, country, and
+  user agent are redacted at ingest**, including inside `payload`. Driven by a single
+  auditable constant, `pii_keys` in `parse.R`.
+- **Contacts and contact lists are not fetched at all** (heavy PII: names, emails, phone
+  numbers, addresses). The tables were once declared in the schema and never written; they
+  have since been removed. Declare them in the same change that populates them.
+- **Campaigns and survey statistics are on by default** — 1–2 requests per survey, no
+  respondent PII.
+
+## ADR-010 — The HTTP layer is injectable so ingestion is testable without credentials
+
+**Decision.** All network access goes through a client from `alchemer_client()`, which
+`ingest()` accepts as an argument. Tests pass a fixture-backed client built from the
+payload examples in the API reference.
+
+**Rationale.** No Alchemer credentials exist in development, and the ingest logic —
+candidate selection, transactions, deletion flagging, rollback, idempotency — is the part
+most worth testing. `httptest2` covers request construction; the fixture client covers
+everything above it.
+
+## ADR-011 — Rate limiting and retries are `httr2`'s job
+
+**Decision.** `req_throttle(capacity = rpm, fill_time_s = 60)` (default 100/min against a
+documented 240/min account-wide limit, leaving headroom for analysts' interactive calls),
+`req_retry(max_tries = 5, exponential backoff, is_transient = 429/500/502/503/504,
+retry_on_failure = TRUE)`, and `req_perform_iterative(next_req = iterate_with_offset("page"))`.
+
+**Consequences.** Deletes a hand-rolled `for (i in 1:300)` pagination loop and a bug where
+`jsonlite::fromJSON(url)` bypassed `httr2` entirely — no retries, no throttling, no error
+handling, and credentials handed to a URL-fetching function.
+
+## ADR-012 — The catalog is SQLite (supersedes ADR-001)
+
+**Date: 2026-08-13.**
+
+**Decision.** `catalog.sqlite`, attached as `ducklake:sqlite:<db>/catalog.sqlite`.
+
+**Why.** ADR-001 accepted a single-client restriction that turned out to bite in the
+damaging direction. *Verified across separate processes* — the only way this can be
+tested, since a file lock is per-process and an in-process test passes either way:
+
+| Catalog | Reader attached → writer can attach? | Writer attached → anyone can attach? |
+|---|---|---|
+| DuckDB file | **no** | no |
+| SQLite | **yes** | yes |
+
+So one analyst leaving `alchemer_db(read_only = TRUE)` open in an IDE failed *every*
+scheduled run, indefinitely. The first fix was a lockfile plus a wait-then-kill policy —
+about 100 lines of PID parsing and signal handling. Then the format's own documentation
+turned out to answer it directly: a DuckDB catalog is "limited to a single client", while
+SQLite is the documented option for "local data warehousing using multiple local clients".
+
+The restriction was never DuckLake's. It was the catalog backend's.
+
+**Consequences.** All lock machinery deleted. Two writers can now overlap in principle;
+DuckLake arbitrates, retrying non-conflicting commits and aborting conflicting ones — and
+because each survey refreshes in its own transaction, a collision costs one survey one
+cycle. Deliberately **not** guarded by a lockfile (least code). Catalog commits are ~40%
+slower (47 ms vs 33 ms, measured) — irrelevant beside API latency. One more extension
+(`sqlite`) to pre-stage for air-gapped installs. There is no in-place migration from a
+`catalog.ducklake`; `alchemer_db()` detects one and refuses rather than creating an empty
+catalog beside it.
+
+## ADR-013 — Merge, don't replace (amends ADR-005)
+
+**Date: 2026-08-13.**
+
+**Decision.** `merge_survey_rows()` upserts by natural key and takes the set difference for
+vanished rows, instead of replacing the survey's whole row set.
+
+**Why.** DuckLake never rewrites a Parquet file in place, so a delete-then-insert of a
+whole survey wrote a fresh copy of every row on every refresh. *Measured* over 12 refreshes
+of a 5,000-response survey with realistic payloads:
+
+| Strategy | After load | After 12 refreshes |
+|---|---|---|
+| Replace wholesale | 2.1 MB | **26.7 MB** |
+| Merge | 2.1 MB | **2.1 MB** |
+
+At a 15-minute cadence that was ~200 MB/day for one survey, retained until snapshots
+expire.
+
+**This does not touch ADR-004.** Every refresh still fetches *every* response. Only what
+gets *written* changed; the hint-versus-selection rule is about what we ask the API for.
+
+**Consequences and traps.**
+
+- `is_deleted` is one of the compared columns, so a response that reappears upstream is
+  un-flagged automatically. Leave it in the comparison.
+- `ingested_at`/`run_id` are **excluded** from the comparison. Including them would make
+  every row differ every run, defeating the entire point. This redefines `ingested_at` as
+  *when this version of the row was first stored*, not when it was last seen —
+  `meta.runs` holds the latter.
+- An empty fetch means "every stored row vanished upstream", which is a real state (a
+  survey whose responses were all deleted). It must be distinguishable from "the parse
+  produced no columns at all".
+- Correctness is no longer true by construction the way a wholesale replace was. ADR-006's
+  `response_count_matches_fetch` is the safety net.
+
+## ADR-014 — `pub` timestamps are local time, configured
+
+**Date: 2026-08-13.**
+
+**Decision.** `raw` keeps every timestamp exactly as Alchemer sent it. `pub` presents them
+all as wall-clock time in `ALCHEMER_TZ` (or `pub_layer(tz =)`), validated against
+`OlsonNames()`.
+
+Alchemer sends two shapes, so there are two treatments:
+
+- **`date_submitted`/`date_started`** carry a per-row `EST`/`EDT` suffix — parsed into an
+  exact instant using that suffix, then rendered in `tz`.
+- **`date_updated`, `created_on`, `modified_on`** carry no suffix and are already in the
+  account's own local time, so they are cast unchanged.
+
+**Why the second one is not UTC.** It was, briefly, and it was wrong. Alchemer's own
+documented example shows one response:
+
+```
+date_started   2025-12-09 17:15:30 EST
+date_submitted 2025-12-09 17:15:37 EST
+date_updated   2025-12-09 17:15:43        <- no suffix, same clock
+```
+
+Updated 6 seconds after submission. Reading `date_updated` as UTC put it five hours
+*before* the response started, on the previous calendar day, for every row — and the API
+reference this project treats as authoritative explicitly says to "treat its timezone as
+ambiguous/configurable per account, not a hardcoded assumption."
+
+**Assumption, stated plainly.** This works while the Alchemer account's timezone and
+`ALCHEMER_TZ` agree — the case they exist for. An account reporting in a different zone
+from the analysts would need a second knob for the source zone;
+`raw.responses.date_updated` stays verbatim either way. **Worth confirming against a live
+account**: fetch any response and compare `date_submitted` with `date_updated`. Seconds
+apart confirms this; five hours apart means the UTC reading was right after all.
+
+## ADR-015 — Expungement is a four-step operation
+
+**Date: 2026-08-13.**
+
+**Decision.** `expunge()` does four things, in order, because a `DELETE` alone leaves the
+values recoverable from disk. Each was *verified* by searching the raw bytes of the
+database directory for a known answer string.
+
+1. **Flush inlined data to Parquet, before deleting anything.** Small writes go into the
+   catalog rather than a data file, and deleting an inlined row only stamps its
+   `end_snapshot` — the row and its values stay in the catalog table.
+2. **Delete from `pub` as well as `raw`.** `pub.answers.answer` is a verbatim copy of the
+   answer text. Deleting only from `raw` leaves it fully readable by SQL — and leaves it
+   as the *only* remaining copy once history is expired, ready to be pushed downstream by
+   the next `load_pub_layer()`.
+3. **Rewrite the data files.** DuckLake deletes are merge-on-read: the row stays in its
+   Parquet file behind a marker, and expiry cannot remove a file that still holds live
+   rows. Needs `ducklake_rewrite_data_files(delete_threshold => 0)`, and
+   `ducklake_cleanup_old_files(cleanup_all => true)` — without that flag, cleanup honours a
+   grace period and reclaims nothing (*measured*: 21 files before, 21 after, 1 with it).
+4. **`VACUUM` the catalog.** DuckLake records **verbatim per-column min/max statistics**,
+   `survey_data` included — so a response's answer JSON can sit in the catalog as a
+   statistic. Deleting the statistic is not enough: SQLite leaves freed pages in place
+   until the file is rebuilt.
+
+**Consequences.** Step 4 needs `RSQLite` (checked up front, before anything is deleted —
+a half-expunged database is the worst possible outcome here). DuckDB's own `sqlite`
+extension cannot do it: it accepts `VACUUM` without rebuilding the file, and its
+`sqlite_query()` pass-through rejects statements that return no rows.
+
+**If you touch this function, re-run the byte-level test.** The guarantee is worthless
+unless something checks the actual bytes.
+
+---
+
+# 5. Why DuckLake, and not Iceberg
+
+This was the open question at design time, tested rather than reasoned from reputation.
+
+## Iceberg
+
+Unquestionably the more established *format*. Not, for this application, the more boring
+*system*.
+
+*Verified:* DuckDB's `iceberg` extension exposes scan/metadata/snapshot functions, but
+`ATTACH ... (TYPE ICEBERG)` demands a catalog:
+
+```
+ATTACH 'ice_wh' AS ice (TYPE ICEBERG);
+  -> Invalid Configuration Error: AUTHORIZATION_TYPE is 'oauth2', yet no 'secret' was provided
+ATTACH 'ice2' AS ice (TYPE ICEBERG, ENDPOINT_TYPE 'local');
+  -> Invalid Configuration Error: Unrecognized 'endpoint_type' (local),
+     accepted options are: glue, s3_tables
+```
+
+There is **no local-filesystem Iceberg catalog**, and therefore no DuckDB write path to an
+Iceberg table on a fileserver. Writing Iceberg needs an Iceberg REST catalog service
+(Lakekeeper / Polaris / Nessie — a JVM network service with its own database, backups, and
+upgrade cycle), AWS Glue, or S3 Tables. And there is no R Iceberg writer at all: `arrow`
+cannot write Iceberg, so an R-only job cannot produce Iceberg tables regardless of catalog.
+`pyiceberg` would put Python in the critical path of every scheduled run.
+
+For a department whose application database is a folder on a laptop or fileserver,
+"Iceberg" concretely means *run and maintain a catalog server, plus a Python or JVM
+runtime, so an R script can write survey data.* That is the opposite of boring
+infrastructure. Iceberg becomes the boring choice only once the department already
+operates a lakehouse catalog — which is not this context.
+
+## DuckLake
+
+v1.0 shipped April 2026 with a production-ready specification and extension and guaranteed
+backward compatibility. It requires **DuckDB ≥ 1.5.2**, which is easy to get wrong: an
+older toolchain writes catalogs stamped `version 0.3`, the pre-1.0 spec, *silently*. Hence
+both the version pin and the runtime assertion.
+
+Verified working: snapshots and time travel; atomic per-survey refresh producing exactly
+one snapshot; small-append efficiency via data inlining; compaction; real expungement
+(expire + cleanup dropped history and deleted the files, and a later
+`AT (VERSION => 3)` correctly failed); JSON/STRUCT/LIST columns and schema evolution;
+dbplyr; views persisting across reconnects; and absolute paths for both catalog and
+`DATA_PATH`, despite the docs recommending relative ones — necessary for a scheduled job
+whose working directory is not guaranteed.
+
+## The honest risk statement
+
+DuckLake is young. Iceberg has years of production use across many engines. Why that risk
+is acceptable here:
+
+1. **The data is plain Parquet.** Whatever happens to the format, `data/**/*.parquet` stays
+   readable by DuckDB, Arrow, pandas, or Spark. Catastrophic lock-in is not on the table.
+2. **The catalog is a documented, queryable SQL schema** — ~25 plain tables. Inspectable
+   and repairable by hand if it ever has to be.
+3. **Backward compatibility is a stated v1.0 guarantee**, and both the minimum version and
+   the stamped spec version are enforced, so a silent downgrade cannot happen.
+4. **The exit is bounded**: `EXPORT DATABASE` / `COPY ... TO` dumps everything in one
+   statement.
+5. **Every alternative meeting the stated requirements is worse.** Iceberg and Delta need a
+   service and a non-R writer; hand-rolled Parquet plus SCD-2 means writing and maintaining
+   versioning, atomic-swap, and compaction ourselves — several hundred lines of exactly
+   the code that is easiest to get subtly and silently wrong, which is the project's
+   stated primary risk.
+
+---
+
+# 6. Storage tuning: what was measured and deliberately left alone
+
+Evaluated against the DuckLake documentation, empirically. All three were left at their
+defaults, and the reasoning is worth keeping because "we should partition this" is a
+recurring instinct.
+
+**Do not partition `raw.responses`.** Partitioning by `survey_id` was measured against not
+partitioning: both pruned a per-survey query to a **single file read** — DuckLake keeps
+per-file min/max statistics, and since a refresh writes one survey per file those are
+already perfectly selective — with identical query times. The difference was compaction:
+200 small files merged into **1** unpartitioned, but into **40** partitioned, one per
+partition, permanently fragmenting storage against DuckLake's own advice that files be at
+least a few megabytes. Cheap to revisit if the archive ever grows large enough for one
+compacted file to hurt: partition keys apply only to newly written data, so adopting it
+never requires a rewrite.
+
+**Leave `target_file_size` at 512 MB.** It is the size compaction aims for; at this scale
+the whole archive fits inside one such file. Lowering it fragments storage for no gain.
+
+**Leave `data_inlining_row_limit` at the default (10).** It was once overridden to 1000,
+chosen for the wholesale-replace write pattern that no longer exists — and *verified*,
+inlining does not apply to `MERGE` inserts at all, so it had stopped affecting `raw`
+entirely. The default now does exactly the right thing: small `meta` writes (plain
+`INSERT`) land in the catalog where operational records belong, and all `raw` data lands
+in Parquet.
+
+**Maintenance is not automatic.** Each refresh writes a small Parquet file per changed
+survey — roughly 96 a day for one actively-collecting survey. `compact()` merges them
+(measured: 200 → 1) and does not touch snapshots, so it is safe to schedule freely.
+`expire_history()` is the one that shortens time travel. Neither runs on its own;
+`vignette("scheduling")` carries the cron lines. `CHECKPOINT` bundles all six DuckLake
+maintenance functions in one statement, but it *also* expires snapshots, which is why
+`compact()` calls the individual functions instead.
+
+---
+
+# 7. How the specification changed during design
+
+The original spec was written before the format was chosen. These are the changes made to
+it, with reasons — useful mainly when someone asks "why doesn't it do X, the spec says X".
+
+| # | Spec said | Changed to | Why |
+|---|---|---|---|
+| 1 | Archival layer + `current_responses` + `response_answers` + `raw_api_payloads` | One current-state `raw` row with a verbatim `payload`; history from snapshots; long answers in `pub` | Four representations of identical bytes. The format already versions data. Cuts storage ~3× and removes the most bug-prone code in the project |
+| 2 | "Open data format supporting historical versions", unspecified | DuckLake v1.0, `duckdb >= 1.5.2`, spec version asserted | §5 — the requirement uniquely determines the choice once local + all-R is honoured |
+| 3 | "Determine refresh candidates" | Explicit five-clause rule plus a backstop, and an explicit statement that hints never filter rows | The unspecified step was where silent data loss would have entered |
+| 4 | Every refresh in a transaction, logging in the DB | Same, but log rows committed *outside* it | Otherwise failures roll back their own failure records (ADR-007) |
+| 5 | Preserve "everything available" | Same, minus documented exclusions | PII retention conflicts with the expunge requirement; expiring URLs make file preservation a bigger job than it looks |
+| 6 | Data model implies typed columns | `raw` entirely VARCHAR/JSON | The API's typing is inconsistent enough that coercion at ingest is a reliability hazard (ADR-003) |
+| 7 | Silent on API region | `ALCHEMER_DOMAIN`, default `api.alchemer.com` | The old code hardcoded the Canadian domain, broken for every other region. The docs call wrong-domain one of the most common causes of failure |
+| 8 | Silent on metadata crawl cost | One `GET /v5/survey/{id}` fetches the whole pages→questions→options tree | Turns dozens of paginated requests per survey into ~2 |
+| 9 | Silent on uniqueness | Post-write assertions | The format has no constraints (ADR-006) |
+| 10 | Silent on concurrent runs | Originally a lock; now unnecessary | ADR-012 |
+| 11 | "Query at a past date" | Same, plus: history depth equals retention | Time travel and expungement are the same knob; users must know they trade off |
+| 12 | Publication layer goals only | Concrete tables, generated wide views, `survey_wide()` | "Easy to consume" needed a decision (ADR-008) |
+
+---
+
+# 8. What is *not* true
+
+Guarantees the specification asserts that this design cannot fully honour. State these
+plainly to users rather than letting them discover them.
+
+- **"Analysts never need the Alchemer API"** — true *except* for file-upload attachment
+  bytes (ADR-009) and any data whose retention window has expired.
+- **"Loss of the Alchemer account never loses analytics capacity"** — holds for survey
+  definitions, questions, options, responses, campaigns, and statistics. **Not** for
+  uploaded files, and not for the redacted IP/geolocation fields.
+- **Nothing in this package has ever run against the real Alchemer API.** Everything is
+  verified against fixtures and real local DuckLake databases. The first live run is still
+  the first live run.
+
+---
+
+# 9. Review findings, and what they teach
+
+Two review rounds. Recorded not for completeness but because most of them are *classes* of
+bug that will recur in this codebase, and the test suite now pins each one.
+
+## Round one — automated multi-agent review
+
+| Finding | Lesson |
+|---|---|
+| `probe_survey()` crashed on a zero-response survey (`body$data[[1]]` on an empty list is "subscript out of bounds", not a missing field, so `%||%` never fired). Caught by an outer `tryCatch`, so it never crashed a run — it just silently made change detection never engage for that survey, on every run, while logging a misleading "probe failed" reason. | **A caught error can be worse than a crash.** The fallback path was plausible enough to hide a permanent defect. |
+| Deprecated shims defaulted credentials to the literal strings `"token"`/`"secret_key"`, so `alchemer_client()`'s `Sys.getenv()` fallback never fired and the placeholders were sent to the API. | Defaults that are *values* rather than `NULL` silently disable fallback chains. |
+| `%||%` doesn't catch `NA`, so friendly fallback text never rendered — "HTTP status: NA" on exactly the connection failure it was written for. Same pattern made `db_status()` report `NA` instead of `0` for deleted counts (SQL `SUM` over zero rows is NULL → `NA`). | **`NA` is not `NULL`.** `or_default()` in `utils.R` exists for this; use it wherever a value can arrive from SQL or a `tryCatch` fallback. |
+| `expunge(before_date =)` compared a suffix-stripped naive timestamp against a Date coerced in the R session's timezone. `pub_layer()` had an explicit comment acknowledging that ambiguity was deliberately unresolved *for display*; the caveat wasn't repeated where the consequence is irreversible. | A caveat that is acceptable in one context is not automatically acceptable in another. Deletion is not display. |
+| `pub_layer(language =)` interpolated unescaped into generated SQL/JSONPath. | Fixed by an allowlist rather than quoting, because the context mixes a SQL literal with a JSONPath inside it — sometimes validation beats escaping. |
+| Wide-view management didn't quote `survey_id`; and the generated *view name* wasn't identifier-quoted at all. | The second bug was found while writing the regression test for the first. **Write the test.** |
+| `pub_layer()`'s hand-written `INSERT ... SELECT`s had a column-order safety mechanism that was never wired up — dead code with no safety net behind it. | Fixed with `INSERT ... BY NAME`, i.e. DuckDB's own mechanism, rather than re-implementing the `raw` pattern for a different write shape. |
+| An empty API result crashed `ingest()` via a column-losing subset. | A zero-row parse must still carry its full column set. |
+| A test-suite audit found four tests that could practically never fail, including one that claimed to check transaction rollback but never injected a failure — it would have passed with the `tryCatch`/`ROLLBACK` deleted outright. | **Tests that cannot fail are worse than no tests**, because they are counted as coverage. |
+
+## Round two — manual review
+
+| Finding | Lesson |
+|---|---|
+| `expunge()` left a complete, readable copy of the expunged data in `pub`. | The archive has more than one copy of the answer text. Any deletion path must know all of them. |
+| Unsuffixed timestamps were read as UTC, contradicting the project's own fixture (ADR-014). | The reference data was in the repo the whole time. Check the fixtures against the assumption. |
+| A read-only reader blocked every scheduled run (ADR-012). | Test concurrency **across processes**. An in-process test passes regardless. |
+| Omitting a dataset from `include =` *deleted* what an earlier run had archived, because "replace with nothing" and "don't fetch" were the same code path. | "Not fetched this run" must never mean "deleted". |
+| `meta.integrity_checks` could only ever contain passes — failures aborted before the write, and would have been rolled back anyway. | A monitoring table that structurally cannot record failure is worse than none: "no failed rows" did not mean "no failed checks". |
+| Renaming a survey orphaned its old wide table in the analytics database forever — still queryable, frozen, unmarked. | The worst failure shape for a warehouse is one that keeps working while going stale. Hence `meta.loads` and scoped cleanup. |
+| `%||%` used where `NA` was the actual value (again), giving a `wide_x_1` view name. | See above. It recurs. |
+| `lint_package()` *crashed* rather than linting, so "lintr clean" was never verifiable. | Verify that your verification runs. |
+| `expunge()` and `expire_history()` didn't actually reclaim files; maintenance never ran at all (ADR-015, §6). | Functions that document an effect must be tested for the effect, not the call. |
+
+The through-line: **the expensive bugs were all in the gap between what a function claimed
+and what it did**, and most were invisible from the R code alone. Several were only caught
+by reading the format's documentation or by inspecting bytes on disk.
+
+---
+
+# 10. Working on this package
+
+## Verification strategy
+
+No credentials exist in development, so correctness rests on three levels:
+
+1. **Pure-function tests** over fixture JSON derived from the API reference, including
+   every documented inconsistency (`test-parse.R`).
+2. **Fixture-client integration tests** driving real `ingest()` runs against a real
+   DuckLake database in a temp dir. This is where idempotence, deletion flagging,
+   rollback, and time travel are proven (`test-ingest.R`).
+3. **Invariants asserted in production** (ADR-006), so the first real run verifies itself
+   and records the result.
+
+Concurrency and expungement need a fourth: **separate processes** and **byte-level
+inspection** respectively. Both have helpers (`helper-concurrency.R`; the `on_disk()`
+pattern in `test-maintenance.R`). Do not replace either with something cheaper.
+
+## Environment
+
+- **`duckdb` R ≥ 1.5.2 is required.** Older versions silently write the pre-release
+  DuckLake 0.3 spec. Prefer a binary install; a source build is slow and can fail on
+  restricted filesystems.
+- Extensions loaded on every connect: `json`, `sqlite`, `ducklake`, `icu`. `icu` is needed
+  for named-zone `AT TIME ZONE`; it is loaded explicitly rather than by autoload so it
+  belongs to the same offline pre-staging list as the others.
+- **Never write a catalog with an old `duckdb` CLI.** A 1.4.x CLI stamps spec 0.3.
+  Read-only inspection is fine.
+- **No Alchemer credentials.** Test against fixtures via the injectable client (ADR-010).
+  Never add a test that needs the network.
+- The three original exported functions did work against the real API; the deprecated
+  shims must preserve that behaviour.
+
+## Conventions
+
+- Commit per unit of work, each ending with `devtools::test()` and `R CMD check` clean.
+- Comments carry the *why*. This codebase leans on that deliberately: the rationale for
+  the catalog choice, the merge, and the timezone treatment all live next to the code that
+  implements them, because that is what gets read when someone changes it.
+- `.Rbuildignore` covers development-only files. `vignettes/articles/` — including this
+  document — is rendered by pkgdown and never ships in the package.
+
+## First real run
+
+`ingest(dry_run = TRUE)`, then `ingest(surveys = <one small survey>)`, then `db_status()`
+and `db_check()`. Then confirm ADR-014's timezone assumption against a real response.

@@ -10,9 +10,8 @@ that keeps it — and optionally your analytics database — current.
   continued Alchemer API access. Later runs refresh only surveys that actually
   changed, and write only the rows that differ. See `vignette("data-model")`
   and `vignette("getting-started")`.
-* The database can be read while the pipeline writes to it. The DuckLake catalog
-  is SQLite (`catalog.sqlite`), which supports multiple local clients, so an
-  analyst's session never blocks a scheduled run and is never blocked by one.
+* The database can be read while the pipeline writes to it, so an analyst's
+  session never blocks a scheduled run and is never blocked by one.
 * `pub_layer()` builds tidy, typed, language-resolved tables from `raw`, plus a
   one-row-per-respondent view per survey. `survey_wide()` computes that shape on
   demand.
@@ -32,12 +31,9 @@ All settings come from the environment; see
 `system.file("extdata", "Renviron.example", package = "alchemeR")`.
 
 * **`ALCHEMER_DB`** (required) — the directory holding the archive.
-* **`ALCHEMER_TZ`** — timezone for `pub`'s timestamps; set it to your Alchemer
-  account's timezone. `raw` is never converted. Alchemer's unsuffixed
-  timestamps (`date_updated`, `created_on`, `modified_on`) are read as already
-  being in that zone, matching Alchemer's own documented example;
-  `EST`/`EDT`-suffixed fields are parsed via their real offset and rendered in
-  it.
+* **`ALCHEMER_TZ`** — timezone `pub`'s timestamps are presented in. Set it to
+  your Alchemer account's timezone; `raw` is never converted. See
+  `vignette("data-model")`.
 * **`ALCHEMER_DOMAIN`** — the API base domain is no longer hardcoded to
   `api.alchemer-ca.com`. It defaults to `api.alchemer.com`, so accounts outside
   the Canadian region now work.
@@ -69,11 +65,16 @@ All settings come from the environment; see
 
 ## Other changes
 
-* All HTTP now goes through `httr2` with throttling, retries with exponential
-  backoff, and iterative pagination. No code path calls
-  `jsonlite::fromJSON()` on a request URL, which previously bypassed retries and
-  throttling and exposed credentials to a URL-fetching function.
+* All HTTP now goes through `httr2`, with throttling, retries with exponential
+  backoff, and proper pagination. Requests are no longer made in a way that
+  bypassed retries and throttling and passed credentials to a URL-fetching
+  function.
+* Maintenance is not automatic: schedule `compact()` and `expire_history()`.
+  See `vignette("scheduling")`.
 * Dropped the `stringr` dependency.
-* Package hygiene: `.Rbuildignore`, the standard `r-lib/actions` R-CMD-check
-  workflow, `_pkgdown.yml`, a `lintr` config, and `.data$` references in place
-  of the `utils::globalVariables()` workaround.
+
+---
+
+Maintainers: the design rationale, architecture decision records, and review
+history live in the *Design and decision record* article on the package website
+(`vignettes/articles/design.Rmd`).
