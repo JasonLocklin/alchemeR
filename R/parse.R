@@ -162,10 +162,9 @@ parse_varnames <- function(items) {
 #' @keywords internal
 parse_responses <- function(survey_id, items) {
   # See parse_surveys()'s comment: no early-return-tibble() shortcut for an
-  # empty `items`. carry_forward_deleted() combines this result with
-  # previously-stored rows and subsets by column name, which broke on a
-  # bare tibble::tibble() (no columns) when a survey's responses all
-  # disappeared in one fetch.
+  # empty `items`. A survey whose responses have all disappeared is a real
+  # state, and merge_survey_rows() has to be able to tell "nothing fetched"
+  # (flag every stored row as deleted) from a frame it cannot read at all.
   tibble::tibble(
     survey_id = survey_id,
     response_id = purrr::map_chr(items, ~ chr1(.x$id)),

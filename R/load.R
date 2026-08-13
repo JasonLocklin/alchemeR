@@ -142,7 +142,6 @@ drop_stale_destination_tables <- function(dest_con, schema, stale) {
 record_load <- function(db, load_id, started_at, status, message, destination, tables, n_rows) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
-  on.exit(release_writer_lock(db), add = TRUE)
   write_rows_generic(con, "meta.loads", tibble::tibble(
     load_id = load_id, started_at = started_at, finished_at = Sys.time(),
     status = status, destination = destination,

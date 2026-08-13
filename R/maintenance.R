@@ -71,7 +71,6 @@ db_status <- function(db = alchemer_db_path()) {
 compact <- function(db = alchemer_db_path()) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
-  on.exit(release_writer_lock(db), add = TRUE)
   flushed <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_flush_inlined_data('{ducklake_alias}')"))
   merged <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_merge_adjacent_files('{ducklake_alias}')"))
   invisible(list(flushed = flushed, merged = merged))
@@ -92,7 +91,6 @@ compact <- function(db = alchemer_db_path()) {
 expire_history <- function(db = alchemer_db_path(), older_than) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
-  on.exit(release_writer_lock(db), add = TRUE)
   cutoff <- DBI::dbQuoteLiteral(con, as.POSIXct(older_than))
   DBI::dbExecute(con, glue::glue(
     "CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => {cutoff})"
@@ -136,7 +134,6 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
   }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
-  on.exit(release_writer_lock(db), add = TRUE)
 
   DBI::dbExecute(con, "BEGIN")
   tryCatch(

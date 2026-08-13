@@ -8,7 +8,7 @@
 ALCHEMER_API_TOKEN=
 ALCHEMER_API_SECRET=
 
-# Directory holding the archive (catalog.ducklake and data/). Use an absolute
+# Directory holding the archive (catalog.sqlite and data/). Use an absolute
 # path for a scheduled job: its working directory is not guaranteed.
 ALCHEMER_DB=
 

@@ -285,7 +285,6 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
   }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
-  on.exit(release_writer_lock(db), add = TRUE)
 
   survey_ids <- if (!is.null(surveys)) {
     as.character(surveys)

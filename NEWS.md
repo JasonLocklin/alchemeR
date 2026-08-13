@@ -8,7 +8,11 @@ that keeps it — and optionally your analytics database — current.
 * `ingest()` downloads the whole account into a local DuckLake application
   database (`raw`/`pub`/`meta` schemas), so analysis no longer depends on
   continued Alchemer API access. Later runs refresh only surveys that actually
-  changed. See `vignette("data-model")` and `vignette("getting-started")`.
+  changed, and write only the rows that differ. See `vignette("data-model")`
+  and `vignette("getting-started")`.
+* The database can be read while the pipeline writes to it. The DuckLake catalog
+  is SQLite (`catalog.sqlite`), which supports multiple local clients, so an
+  analyst's session never blocks a scheduled run and is never blocked by one.
 * `pub_layer()` builds tidy, typed, language-resolved tables from `raw`, plus a
   one-row-per-respondent view per survey. `survey_wide()` computes that shape on
   demand.

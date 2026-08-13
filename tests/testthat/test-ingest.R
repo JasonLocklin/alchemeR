@@ -203,9 +203,10 @@ test_that("every survey vanishing from discovery at once flags them all, without
 })
 
 test_that("every response vanishing from a survey at once flags them all, without crashing", {
-  # Regression test (ultrareview): the same zero-column-tibble bug in
-  # carry_forward_deleted(), triggered when a survey's responses all
-  # disappear in one fetch instead of the account's surveys.
+  # Regression test (ultrareview): the same zero-column-tibble bug, triggered
+  # when a survey's responses all disappear in one fetch instead of the
+  # account's surveys. "Nothing fetched" has to mean "flag every stored row",
+  # not "crash".
   dir <- withr::local_tempdir()
   state <- new_state()
   state$surveys <- list(mock_survey("1"))
@@ -293,11 +294,110 @@ test_that("dry_run reports decisions without writing anything", {
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.runs")$n, 0)
 })
 
+test_that("re-refreshing unchanged data rewrites nothing", {
+  # The property the merge exists for. DuckLake never rewrites a Parquet file
+  # in place, so deleting and re-inserting a whole survey wrote a fresh copy of
+  # every row on every run -- measured at 2.1 MB -> 26.7 MB over 12 refreshes of
+  # a 5,000-response survey, all retained until snapshots expire.
+  #
+  # `ingested_at` is the observable proxy: it is only stamped when a row is
+  # actually written, so an unchanged row keeping its original value is proof
+  # that nothing was rewritten. A regression to replace-wholesale would give
+  # every row a fresh timestamp and fail here.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  before <- DBI::dbGetQuery(con, "SELECT response_id, ingested_at FROM alchemer.raw.responses
+    ORDER BY response_id")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  Sys.sleep(0.01) # so a rewrite would be visibly newer
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client(), force = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  after <- DBI::dbGetQuery(con, "SELECT response_id, ingested_at FROM alchemer.raw.responses
+    ORDER BY response_id")
+  expect_equal(after$response_id, before$response_id)
+  expect_equal(after$ingested_at, before$ingested_at)
+})
+
+test_that("a changed response is rewritten, an unchanged one beside it is not", {
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  before <- DBI::dbGetQuery(con, "SELECT response_id, ingested_at FROM alchemer.raw.responses
+    ORDER BY response_id")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  Sys.sleep(0.01)
+  edited <- mock_response("r2", date_updated = "2026-05-01 00:00:00")
+  edited$status <- "Partial"
+  state$responses[["1"]] <- list(mock_response("r1"), edited)
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  after <- DBI::dbGetQuery(con, "SELECT response_id, status, ingested_at FROM alchemer.raw.responses
+    ORDER BY response_id")
+  expect_equal(after$status[after$response_id == "r2"], "Partial")
+  expect_gt(after$ingested_at[after$response_id == "r2"], before$ingested_at[before$response_id == "r2"])
+  expect_equal(after$ingested_at[after$response_id == "r1"], before$ingested_at[before$response_id == "r1"])
+})
+
+test_that("a response that reappears upstream is un-flagged", {
+  # is_deleted is one of the compared columns, so a returning row differs from
+  # the flagged stored one and the merge updates it. Without that, a response
+  # deleted and then restored in Alchemer would stay flagged forever.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  state$responses[["1"]] <- list(mock_response("r1")) # r2 vanishes
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client(), force = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  flagged <- DBI::dbGetQuery(con, "SELECT response_id FROM alchemer.raw.responses WHERE is_deleted")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  expect_equal(flagged$response_id, "r2")
+
+  state$responses[["1"]] <- list(mock_response("r1"), mock_response("r2")) # ...and returns
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client(), force = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  rows <- DBI::dbGetQuery(con, "SELECT response_id, is_deleted, deleted_detected_at
+    FROM alchemer.raw.responses ORDER BY response_id")
+  expect_equal(rows$response_id, c("r1", "r2"))
+  expect_false(any(rows$is_deleted))
+  expect_true(all(is.na(rows$deleted_detected_at)))
+})
+
 test_that("omitting a dataset from include= leaves what was archived alone", {
-  # Regression test (code review): replace_survey_rows() deletes before it
-  # writes, so an excluded dataset was passed an empty frame and its previously
-  # archived rows were destroyed. Omitting a dataset means "don't fetch it this
-  # run", never "delete it" -- the opposite of the archival premise.
+  # Regression test (code review): an excluded dataset used to be passed an
+  # empty frame, and an empty fetch means "every stored row vanished upstream",
+  # so its previously archived rows were destroyed. Omitting a dataset means
+  # "don't fetch it this run", never "delete it".
   dir <- withr::local_tempdir()
   state <- new_state()
   state$surveys <- list(mock_survey("1"))

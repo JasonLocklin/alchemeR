@@ -57,31 +57,20 @@ A Basic Task running `Rscript.exe path\to\etl_pipeline.R`, with "Start in" set
 to the script's directory (so a `.Renviron` there is found), or with absolute
 paths in the environment regardless.
 
-## Concurrency: who blocks whom
+## Concurrency
 
-The application database allows **one writer at a time**. Any number of
-`alchemer_db(read_only = TRUE)` readers can share it with each other, but a
-reader still blocks a writer for as long as it stays connected — not only while
-it holds a transaction. That combination is what matters in practice, so
-`alchemer_db()` handles the two cases differently:
+Analysts can query the database while the pipeline writes to it. There is no
+lock to wait for and nothing to coordinate: the DuckLake catalog is SQLite,
+which supports multiple local clients, so readers and writers attach freely.
 
-| Already attached | A new writer (`ingest()`, `pub_layer()`) |
-|---|---|
-| A read-only reader | Waits `lock_wait_s` (5 minutes), then kills the reader and continues |
-| Another alchemeR writer | Fails immediately |
-
-Killing a reader is safe — it holds no writes, so nothing can be corrupted —
-but whoever was running it loses their session. The alternative is worse: one
-analyst who leaves a connection open in an IDE would otherwise stop every
-scheduled run indefinitely. Pass `break_lock = FALSE` to wait and then give up
-instead.
-
-A concurrent *writer* is never waited out or killed: it may be partway through
-a survey's refresh, and two writers at once means the schedule needs more
-headroom rather than a shorter fuse.
-
-For analysts, the rule is simply: connect with `read_only = TRUE`, and
-disconnect when you're done.
+If two `ingest()` runs do overlap — an unusually slow run and the next cron
+tick — DuckLake arbitrates: it retries commits that don't logically conflict
+and aborts the ones that do. Because each survey is refreshed in its own
+transaction, the worst case is that one survey fails this run and refreshes on
+the next, which is how every other transient failure already behaves. Still
+worth avoiding: give the schedule enough headroom that runs don't overlap
+under normal conditions, and treat an overlap as a signal that something
+upstream took longer than expected.
 
 ## Loading into an analytics database
 

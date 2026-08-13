@@ -3,7 +3,7 @@ test_that("alchemer_db creates a fresh DuckLake catalog with every schema", {
   con <- alchemer_db(dir)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
 
-  expect_true(file.exists(file.path(dir, "catalog.ducklake")))
+  expect_true(file.exists(file.path(dir, "catalog.sqlite")))
   expect_true(dir.exists(file.path(dir, "data")))
 
   tables <- DBI::dbGetQuery(con, "SHOW ALL TABLES")
@@ -48,101 +48,49 @@ test_that("alchemer_db refuses a catalog stamped below spec version 1.0", {
   expect_error(alchemer_db(dir), "0.3")
 })
 
-test_that("alchemer_db fails fast with an actionable message when the catalog is locked", {
-  skip_on_os("windows") # file locking semantics differ; the mechanism is the same everywhere else
-
-  dir <- withr::local_tempdir()
-  con1 <- alchemer_db(dir) # holds the lock for the duration of this test
-  on.exit(DBI::dbDisconnect(con1, shutdown = TRUE), add = TRUE)
-
-  script <- withr::local_tempfile(fileext = ".R")
-  writeLines(c(
-    "cat_path <- Sys.getenv('ALCHEMER_TEST_CATALOG')",
-    "data_path <- Sys.getenv('ALCHEMER_TEST_DATA')",
-    "con <- DBI::dbConnect(duckdb::duckdb())",
-    "try(DBI::dbExecute(con, 'INSTALL json'), silent = TRUE)",
-    "DBI::dbExecute(con, 'LOAD json')",
-    "try(DBI::dbExecute(con, 'INSTALL ducklake'), silent = TRUE)",
-    "DBI::dbExecute(con, 'LOAD ducklake')",
-    "sql <- paste0(\"ATTACH '\", 'ducklake:', cat_path, \"' AS alchemer (DATA_PATH '\", data_path, \"')\")",
-    "res <- tryCatch({DBI::dbExecute(con, sql); 'ok'}, error = function(e) conditionMessage(e))",
-    "cat(res)"
-  ), script)
-  withr::local_envvar(
-    ALCHEMER_TEST_CATALOG = file.path(dir, "catalog.ducklake"),
-    ALCHEMER_TEST_DATA = paste0(file.path(dir, "data"), "/")
-  )
-  rscript <- file.path(R.home("bin"), "Rscript")
-  out <- system2(rscript, script, stdout = TRUE, stderr = TRUE)
-  expect_true(any(grepl("lock", out, ignore.case = TRUE)), info = paste(out, collapse = "\n"))
-})
-
-test_that("lock_holder_pid extracts the PID DuckDB names, or NA", {
-  err <- simpleError(paste(
-    'Could not set lock on file "/tmp/x/catalog.ducklake": Conflicting lock is held',
-    "in /usr/lib/R/bin/exec/R (PID 714997) by user root."
-  ))
-  expect_equal(lock_holder_pid(err), 714997L)
-  expect_true(is.na(lock_holder_pid(simpleError("Could not set lock on file: unknown holder"))))
-})
-
-test_that("a writer.lock naming a process that isn't the lock holder is ignored", {
-  # The self-healing property: a writer that crashed leaves writer.lock behind
-  # but no longer holds the catalog. Comparing the recorded PID against the PID
-  # DuckDB reports as *actually* holding the lock is what keeps that stale file
-  # from failing every future run until someone deletes it by hand -- which
-  # checking only for the file's existence would do.
-  dir <- withr::local_tempdir()
-  writeLines("999999", file.path(dir, "writer.lock"))
-  expect_false(holder_is_writer(dir, 12345L)) # someone else holds it
-  expect_true(holder_is_writer(dir, 999999L)) # the recorded writer holds it
-  expect_false(holder_is_writer(dir, NA_integer_)) # DuckDB named nobody
-})
-
-test_that("a concurrent alchemeR writer fails fast, and is never waited out or killed", {
+test_that("a reader in another process does not block a writer, and vice versa", {
   skip_on_os("windows") # file locking semantics differ
+  # This is the whole reason the catalog is SQLite rather than a DuckDB file
+  # (ADR-001), and it can only be tested across *processes*: a file lock is
+  # per-process, so two attachments from one R session never conflict and an
+  # in-process test would pass either way.
   dir <- withr::local_tempdir()
-  holder <- local_lock_holder(dir, read_only = FALSE)
-  # Stand in for the holder having recorded itself: the subprocess deliberately
-  # doesn't load alchemeR (it wouldn't be installed during R CMD check), so the
-  # test writes the writer.lock the real code would have written.
-  writeLines(as.character(holder$pid), file.path(dir, "writer.lock"))
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title) VALUES ('1', 'S')")
+  DBI::dbDisconnect(con, shutdown = TRUE)
 
-  before <- Sys.time()
-  expect_error(alchemer_db(dir, lock_wait_s = 60), class = "alchemeR_db_locked")
-  expect_error(alchemer_db(dir, lock_wait_s = 60), "writer")
-  # Both calls returned promptly: lock_wait_s was not slept through.
-  expect_lt(as.numeric(difftime(Sys.time(), before, units = "secs")), 30)
-  expect_true(process_alive(holder$pid))
+  for (holder_mode in c("ro", "rw")) {
+    holder <- local_catalog_holder(dir, read_only = (holder_mode == "ro"))
+    on.exit(NULL, add = TRUE)
+
+    reader <- alchemer_db(dir, read_only = TRUE)
+    expect_equal(DBI::dbGetQuery(reader, "SELECT COUNT(*) n FROM alchemer.raw.surveys")$n, 1)
+    DBI::dbDisconnect(reader, shutdown = TRUE)
+
+    writer <- alchemer_db(dir)
+    expect_equal(DBI::dbGetQuery(writer, "SELECT COUNT(*) n FROM alchemer.raw.surveys")$n, 1)
+    DBI::dbDisconnect(writer, shutdown = TRUE)
+
+    stop_catalog_holder(holder)
+  }
 })
 
-test_that("a reader still holding the database after the wait is killed, and the writer proceeds", {
-  skip_on_os("windows")
+test_that("the catalog is SQLite and stamped at spec 1.0", {
   dir <- withr::local_tempdir()
-  holder <- local_lock_holder(dir, read_only = TRUE)
-  expect_true(process_alive(holder$pid))
-
-  # lock_wait_s = 0 skips the 5-minute wait; every other step is the real path.
-  con <- suppressWarnings(alchemer_db(dir, lock_wait_s = 0))
+  con <- alchemer_db(dir)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
-
-  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.surveys")$n, 0)
-  expect_false(process_alive(holder$pid))
-  # ...and the writer recorded itself, so the next writer will fail fast
-  # rather than killing this one.
-  expect_true(holder_is_writer(dir, Sys.getpid()))
+  expect_true(file.exists(file.path(dir, "catalog.sqlite")))
+  settings <- DBI::dbGetQuery(con, "FROM ducklake_settings('alchemer')")
+  expect_equal(settings$catalog_type, "sqlite")
 })
 
-test_that("break_lock = FALSE leaves the reader alone and aborts instead", {
-  skip_on_os("windows")
+test_that("a directory holding the old DuckDB-file catalog is refused, not silently replaced", {
+  # Creating an empty catalog.sqlite beside a populated catalog.ducklake would
+  # look exactly like total data loss to whoever ran it.
   dir <- withr::local_tempdir()
-  holder <- local_lock_holder(dir, read_only = TRUE)
-
-  expect_error(
-    alchemer_db(dir, lock_wait_s = 0, break_lock = FALSE),
-    class = "alchemeR_db_locked"
-  )
-  expect_true(process_alive(holder$pid))
+  file.create(file.path(dir, "catalog.ducklake"))
+  expect_error(alchemer_db(dir), class = "alchemeR_db_error")
+  expect_error(alchemer_db(dir), "no longer uses")
 })
 
 test_that("a read-only caller survives a database missing a table added since it was made", {

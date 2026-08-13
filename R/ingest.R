@@ -122,51 +122,15 @@ log_event <- function(con, run_id, survey_id, phase, status, http_status = NA_in
 }
 
 # Surveys the discovery list no longer returns are flagged, never dropped
-# (ADR-005 applies at survey level too). raw.surveys is small (<=~100 rows
-# per the spec's stated scale), so it is replaced wholesale each run rather
-# than diffed row by row.
+# (ADR-005 applies at survey level too). Not scoped to a survey: the whole
+# account's discovery list is one set difference.
 upsert_surveys <- function(con, run_id, discovered, now = Sys.time()) {
-  prior <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM {ducklake_alias}.raw.surveys"))
   discovered <- dplyr::mutate(
     discovered, ingested_at = now, run_id = run_id,
     is_deleted = FALSE, deleted_detected_at = as.POSIXct(NA)
   )
-
-  if (nrow(prior) > 0) {
-    vanished <- prior[!(prior$survey_id %in% discovered$survey_id), , drop = FALSE]
-    if (nrow(vanished) > 0) {
-      freshly_vanished <- is.na(vanished$is_deleted) | !vanished$is_deleted
-      vanished$is_deleted[freshly_vanished] <- TRUE
-      vanished$deleted_detected_at[freshly_vanished] <- now
-      discovered <- dplyr::bind_rows(discovered, vanished[names(discovered)])
-    }
-  }
-
-  DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.raw.surveys"))
-  write_rows(con, "surveys", discovered)
+  merge_survey_rows(con, "surveys", NULL, discovered, on_vanished = "flag", now = now)
   invisible(discovered)
-}
-
-# The only mechanism that can detect a deletion is a full refresh (ADR-005):
-# the new row set is (fetched) UNION (previously stored but absent from the
-# fetch, carried forward with is_deleted = TRUE). A response once flagged
-# stays flagged unless the API returns it again.
-carry_forward_deleted <- function(con, survey_id, fetched, now = Sys.time()) {
-  fetched <- dplyr::mutate(fetched, is_deleted = FALSE, deleted_detected_at = as.POSIXct(NA))
-  prior <- DBI::dbGetQuery(con, glue::glue(
-    "SELECT * FROM {ducklake_alias}.raw.responses WHERE survey_id = {DBI::dbQuoteString(con, survey_id)}"
-  ))
-  if (nrow(prior) == 0) {
-    return(fetched)
-  }
-  vanished <- prior[!(prior$response_id %in% fetched$response_id), , drop = FALSE]
-  if (nrow(vanished) == 0) {
-    return(fetched)
-  }
-  freshly_vanished <- is.na(vanished$is_deleted) | !vanished$is_deleted
-  vanished$is_deleted[freshly_vanished] <- TRUE
-  vanished$deleted_detected_at[freshly_vanished] <- now
-  dplyr::bind_rows(fetched, vanished[names(fetched)])
 }
 
 # Fetches everything for one survey and rebuilds its rows in every raw table
@@ -181,7 +145,12 @@ carry_forward_deleted <- function(con, survey_id, fetched, now = Sys.time()) {
 # (which would reach past this frame entirely and leave both unset).
 refresh_survey <- function(con, client, survey_id, run_id, include, modified_on, probe) {
   now <- Sys.time()
-  stamp <- function(df) if (nrow(df) == 0) df else dplyr::mutate(df, ingested_at = now, run_id = run_id)
+  # Stamps unconditionally, including on a zero-row frame: merge_survey_rows()
+  # needs the full column set even when nothing was fetched, because that is
+  # precisely the case where every stored row has vanished upstream.
+  stamp <- function(df) {
+    if (ncol(df) == 0) df else dplyr::mutate(df, ingested_at = now, run_id = run_id)
+  }
   n_fetched <- NA_integer_
   checks <- NULL
 
@@ -201,25 +170,27 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
       response_items <- alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveyresponse"))
       fetched_responses <- parse_responses(survey_id, response_items)
       n_fetched <- nrow(fetched_responses)
+      responses <- stamp(dplyr::mutate(
+        fetched_responses, is_deleted = FALSE, deleted_detected_at = as.POSIXct(NA)
+      ))
 
-      responses <- stamp(carry_forward_deleted(con, survey_id, fetched_responses, now))
-      replace_survey_rows(con, "survey_definitions", survey_id, stamp(parsed_def$definition))
-      replace_survey_rows(con, "survey_pages", survey_id, stamp(parsed_def$pages))
-      replace_survey_rows(con, "survey_questions", survey_id, stamp(parsed_def$questions))
-      replace_survey_rows(con, "survey_question_options", survey_id, stamp(parsed_def$options))
-      replace_survey_rows(con, "responses", survey_id, responses)
+      merge_survey_rows(con, "survey_definitions", survey_id, stamp(parsed_def$definition))
+      merge_survey_rows(con, "survey_pages", survey_id, stamp(parsed_def$pages))
+      merge_survey_rows(con, "survey_questions", survey_id, stamp(parsed_def$questions))
+      merge_survey_rows(con, "survey_question_options", survey_id, stamp(parsed_def$options))
+      merge_survey_rows(con, "responses", survey_id, responses, on_vanished = "flag", now = now)
 
-      # A dataset left out of `include` is skipped entirely, not replaced with
-      # nothing: replace_survey_rows() deletes before it writes, so passing an
-      # empty frame would *destroy* whatever an earlier run archived. Omitting
-      # a dataset means "don't fetch it this time", never "delete it".
+      # A dataset left out of `include` is skipped entirely, not merged as an
+      # empty set: an empty fetch means "every stored row has vanished
+      # upstream", which would delete whatever an earlier run archived.
+      # Omitting a dataset means "don't fetch it this time", never "delete it".
       if ("campaigns" %in% include) {
-        replace_survey_rows(con, "survey_campaigns", survey_id, stamp(parse_campaigns(
+        merge_survey_rows(con, "survey_campaigns", survey_id, stamp(parse_campaigns(
           survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveycampaign"))
         )))
       }
       if ("statistics" %in% include) {
-        replace_survey_rows(con, "survey_statistics", survey_id, stamp(parse_statistics(
+        merge_survey_rows(con, "survey_statistics", survey_id, stamp(parse_statistics(
           survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveystatistic"))
         )))
       }
@@ -295,7 +266,6 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
   run_started_at <- Sys.time()
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
-  on.exit(release_writer_lock(db), add = TRUE)
 
   if (!dry_run) {
     write_rows_generic(con, "meta.runs", tibble::tibble(

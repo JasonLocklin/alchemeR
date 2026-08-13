@@ -17,14 +17,16 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
 
 ```
 $ALCHEMER_DB/
-  catalog.ducklake     # the catalog -- an ordinary DuckDB file
+  catalog.sqlite       # the catalog: table structure, snapshots, row locations
   data/                # Parquet data files, written and compacted by DuckDB
 ```
 
 It's a [DuckLake](https://ducklake.select/) database: Parquet for the data, a
-small DuckDB file tracking table structure, snapshots, and where every row
-lives. `alchemer_db()` attaches it under the alias `alchemer`, with three
-schemas:
+small SQL database tracking table structure, snapshots, and where every row
+lives. The catalog is SQLite rather than a DuckDB file because that is what
+allows more than one process to use it — analysts can query the database while
+the pipeline writes to it, with no lock to wait for. `alchemer_db()` attaches
+it under the alias `alchemer`, with three schemas:
 
 | Schema | What it's for | Written by |
 |---|---|---|
@@ -93,8 +95,22 @@ tombstone to detect a deletion from. So every refresh downloads **all** of a
 survey's responses and compares that set to what's stored: anything previously
 stored and now missing is flagged `is_deleted = TRUE` with a
 `deleted_detected_at`, never removed. The same applies to a survey that
-disappears from account discovery. Once flagged, a row stays flagged unless the
-API returns it again. Filter deleted rows in or out as your analysis needs.
+disappears from account discovery. A row that reappears upstream is un-flagged
+automatically. Filter deleted rows in or out as your analysis needs.
+
+### Only what changed is written
+
+Comparing the fetched set against the stored one is also what keeps the archive
+small. DuckLake never rewrites a Parquet file in place, so replacing a survey's
+rows wholesale on each refresh would write a fresh copy of every row every
+time — for a 5,000-response survey polled every 15 minutes, about 200 MB a day,
+all of it retained until snapshots expire. Instead each refresh writes only rows
+that actually differ, so an unchanged survey costs nothing but the requests.
+
+One consequence worth knowing: `ingested_at` on a `raw` row means *when this
+version of the row was first stored*, not when it was last seen. An untouched
+response keeps its original value indefinitely. `meta.runs` and
+`meta.run_events` are where "when did we last look" lives.
 
 ## Why full refresh, not incremental
 

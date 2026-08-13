@@ -163,22 +163,38 @@ rollback path), and `load_pub_layer()` holds a read-only connection open for the
 duration of the copy to the analytics database. Both widen the window in which the
 lock is held.
 
-**Fixed** (`b545974`), with the policy the user chose: a reader is waited out for
-`lock_wait_s` (default 300) and then killed, because it holds no writes and cannot
-corrupt anything; a concurrent *writer* is never waited out or killed, since it may be
-partway through a refresh transaction.
+**Fixed, then fixed better.** The first fix (`b545974`) implemented the wait-then-kill
+policy: wait 5 minutes for the reader, then kill it as stuck, while never touching a
+concurrent writer. It worked, and it cost ~100 lines of lockfile, PID parsing, and
+signal handling.
 
-The two are told apart by `writer.lock`, which records the attaching writer's PID. What
-makes this robust is that the file's *existence* isn't the test — the PID in it is
-compared against the PID DuckDB names as actually holding the lock. A writer that
-crashed leaves the file behind but holds nothing, so the stale file self-heals instead
-of blocking every future run until someone deletes it by hand. `break_lock = FALSE`
-opts out of killing.
+Reading DuckLake's own catalog guidance made that unnecessary (`0f3ab0d`). The
+restriction was never DuckLake's — it was the *catalog backend*:
 
-Tested across genuinely separate `Rscript` processes, which is the only way this can be
-tested: DuckDB's lock is per-process, so two attachments from one R session never
-conflict and an in-process test would pass for something that fails in production.
-`scheduling.Rmd` now documents both directions in a table.
+> If you would like to perform local data warehousing with a single client, use
+> DuckDB... using **multiple local clients**, use **SQLite**... Note that if you are
+> using DuckDB as your catalog database, you're limited to a single client.
+
+Switching the catalog to SQLite removes the problem rather than managing it. *Verified
+across separate processes* — the only way this can be tested, since a file lock is
+per-process and an in-process test passes either way:
+
+| Catalog | Reader holds it → writer attaches? | Writer holds it → writer attaches? |
+|---|---|---|
+| DuckDB file | fails | fails |
+| SQLite | **succeeds** | **succeeds** |
+
+So the entire lock apparatus was deleted: no lockfile, no wait, no kill, no
+`break_lock`, and `vignette("scheduling")`'s concurrency section shrank from a policy
+table to a paragraph. Two writers can now overlap in principle; DuckLake arbitrates by
+retrying non-conflicting commits and aborting conflicting ones, and since each survey
+refreshes in its own transaction a collision costs one survey one cycle. Guarding that
+with a lockfile was considered and declined (user's call: least code).
+
+Cost, for the record: catalog commits are ~40% slower (47 ms vs 33 ms, measured), which
+is nothing beside API latency; one more extension (`sqlite`) to pre-stage for air-gapped
+installs; and no in-place migration from an existing `catalog.ducklake`, which
+`alchemer_db()` now detects and refuses rather than creating an empty catalog beside it.
 
 ---
 
@@ -376,12 +392,29 @@ already are) rather than in a user-facing document.
 4. **Wide views** keep their titled names downstream; the `meta.loads` cleanup is what
    handles renames.
 
+## Found after the review, from the DuckLake docs
+
+Two problems the review missed, both surfaced by the user reading the format's own
+documentation. Worth recording because neither was visible from the code alone:
+
+- **Write amplification (`0f3ab0d`).** Replacing a survey's rows wholesale on each
+  refresh wrote a fresh copy of every row, because DuckLake never rewrites a Parquet
+  file in place. *Measured*: 12 refreshes of a 5,000-response survey grew the database
+  2.1 MB → 26.7 MB; merging only changed rows left it at 2.1 MB. At a 15-minute cadence
+  that was ~200 MB/day for one survey. Now `merge_survey_rows()` upserts by natural key
+  and takes the set difference for deletions, which leaves ADR-004 untouched — every
+  refresh still fetches everything; only what gets *written* changed. Three tests pin
+  the property, including that a reappearing response is un-flagged.
+- **The catalog choice (see H3 above).** The single-client restriction was the DuckDB
+  catalog's, not DuckLake's.
+
+The general lesson: both were assumptions inherited from the original plan that the
+format's documentation contradicts. Worth re-reading `docs/ducklake-docs.md` against
+the remaining design choices — particularly partitioning and `target_file_size`, which
+this package has never tuned.
+
 ## Still worth knowing
 
-- **The reader-kill is destructive to a person, not to data.** An analyst who leaves a
-  read-only session open past the 5-minute budget loses it with no warning at their end.
-  `getting-started.Rmd` now tells analysts to disconnect when done, which is the only
-  mitigation that doesn't reintroduce the blocking problem.
 - **Nothing here has run against the real API.** Every finding above was verified against
   fixtures and a real local DuckLake database, but no Alchemer credentials exist in this
   environment (ADR-010). The first live run is still the first live run — `ingest(dry_run

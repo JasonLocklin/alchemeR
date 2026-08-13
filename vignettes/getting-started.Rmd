@@ -87,10 +87,8 @@ survey_wide(con, "YOUR_SURVEY_ID")
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
 
-Use `read_only = TRUE` whenever you are only reading, and disconnect when you
-are done: an open read/write connection stops a scheduled `ingest()` from
-running at all, and an open read-only one delays it (see
-`vignette("scheduling")`).
+Use `read_only = TRUE` whenever you are only reading. You can query the
+database while a scheduled `ingest()` is running — neither blocks the other.
 
 `survey_wide()` computes the wide shape on demand, straight from `raw` — handy
 for a survey you haven't run `pub_layer()` on yet.
