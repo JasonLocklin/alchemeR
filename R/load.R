@@ -116,6 +116,9 @@ destination_label <- function(dest_con) {
 }
 
 previously_loaded_tables <- function(con) {
+  if (!table_exists(con, "meta", "loads")) {
+    return(character(0))
+  }
   last <- DBI::dbGetQuery(con, glue::glue(
     "SELECT tables FROM {ducklake_alias}.meta.loads
      WHERE status = 'completed' ORDER BY started_at DESC LIMIT 1"

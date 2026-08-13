@@ -20,23 +20,33 @@ knitr::opts_chunk$set(
 [![R-CMD-check](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-alchemeR downloads your whole [Alchemer](https://www.alchemer.com/) account into a
-local **DuckLake** application database, so analysis scripts stop depending on
-continued access to the Alchemer API. `ingest()` is safe to schedule: a first run
-downloads everything politely, and subsequent runs only refresh surveys that have
-actually changed. Once ingested, `pub_layer()` builds tidy, typed tables (and a
-one-row-per-respondent wide view per survey) for ordinary analysis. `load_pub_layer()`
-completes the ETL pipeline by copying that publication layer into an analytics
-database (SQL Server, Postgres, or anything else `DBI` supports).
+alchemeR copies your whole [Alchemer](https://www.alchemer.com/) account into a
+local database and, optionally, on into your analytics database. Two things come
+out of that:
 
-The package also still exposes direct-API functions for one-off use, and preserves
-the three functions from earlier releases as deprecated shims. See
-`vignette("data-model")` for the schema, `vignette("getting-started")` to begin, and
-`vignette("scheduling")` for running `ingest()` (and the Load stage) unattended.
+- **An archive.** Every survey, question, and response is kept locally, in full,
+  so analysis stops depending on continued Alchemer access — and so you still
+  have the data if a survey (or the account) goes away.
+- **A pipeline.** A scheduled job that keeps both the archive and your analytics
+  database current, with no per-survey code to maintain.
+
+Three functions, one per stage:
+
+| Function | Moves | What it does |
+|---|---|---|
+| `ingest()` | Alchemer → local `raw` | Downloads everything, verbatim. Later runs refresh only surveys that changed. |
+| `pub_layer()` | local `raw` → local `pub` | Builds tidy, typed tables, plus a one-row-per-respondent view per survey. |
+| `load_pub_layer()` | local `pub` → analytics DB | Copies `pub` into SQL Server, Postgres, or any other DBI backend. |
+
+In ETL terms it is an **ELT** pipeline: data lands untouched first and is
+transformed afterwards, which is what keeps a new question type from ever
+breaking a run. If you'd rather think in medallion layers, `raw` is bronze and
+`pub` is silver.
+
+The package also exposes direct-API functions for one-off use, and keeps the
+three functions from earlier releases as deprecated shims.
 
 ## Installation
-
-You can install the development version of alchemeR from [GitHub](https://github.com/) with:
 
 ``` r
 # install.packages("devtools")
@@ -45,40 +55,59 @@ devtools::install_github("grousell/alchemeR")
 
 ## Configuration
 
-alchemeR reads credentials and settings from environment variables (see
-`inst/extdata/Renviron.example`), never from arguments in your script:
+Everything is read from environment variables, never from arguments in your
+script. Copy `system.file("extdata", "Renviron.example", package = "alchemeR")`
+to `.Renviron` and fill it in:
 
-``` r
-Sys.setenv(
-  ALCHEMER_API_TOKEN = "...",
-  ALCHEMER_API_SECRET = "...",
-  ALCHEMER_DB = "~/alchemer-db"
-)
+```
+ALCHEMER_API_TOKEN=...
+ALCHEMER_API_SECRET=...
+ALCHEMER_DB=/srv/alchemer-db     # where the archive lives
+ALCHEMER_TZ=America/Toronto      # timezone for pub's timestamps
 ```
 
-## Example
-
-### Ingest the account, then build the publication layer
+## Archive and analyse
 
 ```{r ingest, eval=FALSE}
 library(alchemeR)
 
-ingest()      # first run: downloads everything; later runs only refresh changes
-pub_layer()   # typed tables + one wide view per survey
+ingest()      # first run downloads everything; later runs refresh what changed
+pub_layer()   # tidy typed tables + a wide view per survey
 ```
 
-### Query the application database
-
 ```{r query, eval=FALSE}
-con <- alchemer_db()
-dplyr::collect(alchemer_tbl(con, "pub.responses"))
+con <- alchemer_db(read_only = TRUE)
+
+# one row per response x question, ready for dplyr
+alchemer_tbl(con, "pub.answers") |> dplyr::collect()
+
+# one row per respondent
 survey_wide(con, "8611799")
+
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
 
-### Direct API access, for one-off use
+## Load into an analytics database
+
+```{r load, eval=FALSE}
+dest <- DBI::dbConnect(odbc::odbc(), Driver = "ODBC Driver 18 for SQL Server", ...)
+
+load_pub_layer(dest, schema = "dbo")   # full overwrite, one table per pub table
+load_pipeline_health(dest, schema = "dbo") # a row your monitoring can watch
+```
+
+`system.file("scripts", "etl_pipeline.R", package = "alchemeR")` is the whole
+thing as a runnable script, ready for cron or Task Scheduler.
+
+## Direct API access
 
 ```{r direct-api, eval=FALSE}
 alchemer_surveys()
 alchemer_responses("8611799")
 ```
+
+## Learn more
+
+`vignette("getting-started")` to set up · `vignette("data-model")` for the
+schema, history, and what is deliberately not stored · `vignette("scheduling")`
+for running it unattended.

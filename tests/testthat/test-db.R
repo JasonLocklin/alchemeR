@@ -145,6 +145,24 @@ test_that("break_lock = FALSE leaves the reader alone and aborts instead", {
   expect_true(process_alive(holder$pid))
 })
 
+test_that("a read-only caller survives a database missing a table added since it was made", {
+  # A read-only connection skips ensure_schema() and cannot add anything, so a
+  # database last opened by an older version of the package is missing every
+  # table added since. Reading one has to degrade to "no rows", not error --
+  # db_status() is exactly the sort of thing someone runs first.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "DROP TABLE alchemer.meta.loads") # simulate the older schema
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_false(table_exists(con, "meta", "loads"))
+  expect_true(table_exists(con, "meta", "runs"))
+  expect_equal(previously_loaded_tables(con), character(0))
+  expect_true(is.na(db_status(dir)$last_load_status))
+})
+
 test_that("db_check asserts uniqueness for every table with a natural key", {
   # DuckLake declares no PRIMARY KEY/UNIQUE constraint (ADR-006), so each grain
   # is only known to be unique because it is checked. Responses were checked

@@ -1,60 +1,55 @@
-# Copy this file to .Renviron (project-level) or ~/.Renviron (user-level) and
-# fill in your values. alchemeR never accepts credentials as bare function
-# arguments in a way that would end up committed to project source -- every
-# setting below is read from the environment (or, for the API secret, may be
-# supplied at runtime via keyring instead; see vignette("scheduling")).
+# Copy to .Renviron (project) or ~/.Renviron (user) and fill in. alchemeR reads
+# all of these from the environment, so no credential ever has to be written
+# into project source. The API secret and the analytics database password can
+# come from keyring instead -- see vignette("scheduling").
 
-# Required
+# --- Required --------------------------------------------------------------
+
 ALCHEMER_API_TOKEN=
 ALCHEMER_API_SECRET=
 
-# Required for ingest()/pub_layer()/alchemer_db() and friends: the directory
-# that will hold catalog.ducklake and data/. Use an absolute path for a
-# scheduled job, since its working directory is not guaranteed.
+# Directory holding the archive (catalog.ducklake and data/). Use an absolute
+# path for a scheduled job: its working directory is not guaranteed.
 ALCHEMER_DB=
 
-# Timezone for the publication layer. pub_layer() presents every pub
-# timestamp as wall-clock time in this zone, and reads Alchemer's unsuffixed
-# timestamps (date_updated, created_on, modified_on) as already being in it --
-# so it should match your Alchemer account's timezone setting. `raw` is never
-# converted: it keeps whatever string the API sent.
+# Timezone for pub's timestamps. Set it to your Alchemer account's timezone:
+# pub_layer() presents every pub timestamp as wall-clock time in this zone, and
+# reads Alchemer's unsuffixed timestamps (date_updated, created_on,
+# modified_on) as already being in it. raw is never converted.
 #
-# SET THIS EXPLICITLY for a scheduled job. Left unset it falls back to the
-# machine's own timezone, which would make pub's values depend on which
-# machine last ran pub_layer() (a laptop in Toronto and a server in UTC would
-# write different numbers into the same shared database).
+# Set this explicitly. Left unset it falls back to the machine's own timezone,
+# so a laptop and a UTC server would write different values into one database.
 ALCHEMER_TZ=America/Toronto
 
-# Optional -- defaults shown
-# Regional API base domain. See https://apihelp.alchemer.com/help/api-base-domains
+# --- Optional (defaults shown) ---------------------------------------------
+
+# Regional API base domain -- getting this wrong is a common cause of failed
+# calls. See https://apihelp.alchemer.com/help/api-base-domains
 #   United States: api.alchemer.com (default)
 #   European Union: api.alchemer.eu
 #   Canada:         api.alchemer-ca.com
 #   Australia:      api.au.alchemer.com
 ALCHEMER_DOMAIN=api.alchemer.com
 
-# Request-per-minute throttle ceiling. The documented account-wide limit is
-# 240/min; the default here leaves headroom for interactive use of the same
-# account while ingest() runs.
+# Request ceiling per minute. Alchemer's account-wide limit is 240; the default
+# leaves headroom for interactive use of the same account during a run.
 ALCHEMER_RPM=100
 
-# Maximum days since a survey's last successful refresh before ingest()
-# refreshes it regardless of change detection -- a correctness backstop, not
-# a freshness setting. Lower it for accounts with edit-heavy closed surveys.
+# Days since a survey's last successful refresh before it is refreshed
+# regardless of change detection. A correctness backstop, not a freshness
+# setting -- lower it for accounts with edit-heavy closed surveys.
 ALCHEMER_FULL_SWEEP_DAYS=90
 
-# --- Analytics database (only needed for inst/scripts/etl_pipeline.R) -----
-# load_pub_layer()/load_pipeline_health() are plain DBI and work against any
-# DBI backend; these variables match the odbc + SQL Server example in
-# etl_pipeline.R. The service account they name only ever needs
-# CREATE TABLE / DROP TABLE / INSERT privileges on ANALYTICS_DB_SCHEMA --
-# never SELECT -- since nothing reads the destination back to decide what
-# to load (see vignette("scheduling")).
+# --- Analytics database (only for the Load stage) --------------------------
+# Matches the odbc + SQL Server example in inst/scripts/etl_pipeline.R;
+# load_pub_layer() is plain DBI and works with any backend. This service
+# account needs only CREATE TABLE / DROP TABLE / INSERT on the schema below --
+# never SELECT.
+
 ANALYTICS_DB_DRIVER=ODBC Driver 18 for SQL Server
 ANALYTICS_DB_SERVER=
 ANALYTICS_DB_DATABASE=
 ANALYTICS_DB_SCHEMA=dbo
 ANALYTICS_DB_UID=
-# Prefer keyring over a plaintext password here where possible; see
-# vignette("scheduling").
+# Prefer keyring over a plaintext password here.
 ANALYTICS_DB_PWD=

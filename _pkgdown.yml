@@ -4,17 +4,17 @@ template:
   bootstrap: 5
 
 reference:
-- title: Ingestion and layers
+- title: The pipeline
+  desc: >
+    One function per stage: Alchemer to the local archive, the archive to tidy
+    tables, and those tables on to an analytics database.
   contents:
   - ingest
   - pub_layer
-
-- title: Loading into an analytics database
-  contents:
   - load_pub_layer
   - load_pipeline_health
 
-- title: Reading the application database
+- title: Reading the data
   contents:
   - alchemer_db
   - alchemer_tbl

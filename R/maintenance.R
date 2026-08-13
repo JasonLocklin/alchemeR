@@ -31,10 +31,14 @@ db_status <- function(db = alchemer_db_path()) {
   last_run <- DBI::dbGetQuery(con, glue::glue(
     "SELECT run_id, status, finished_at FROM {ducklake_alias}.meta.runs ORDER BY started_at DESC LIMIT 1"
   ))
-  last_load <- DBI::dbGetQuery(con, glue::glue(
-    "SELECT load_id, status, finished_at, n_tables, n_rows FROM {ducklake_alias}.meta.loads
-     ORDER BY started_at DESC LIMIT 1"
-  ))
+  last_load <- if (table_exists(con, "meta", "loads")) {
+    DBI::dbGetQuery(con, glue::glue(
+      "SELECT load_id, status, finished_at, n_tables, n_rows FROM {ducklake_alias}.meta.loads
+       ORDER BY started_at DESC LIMIT 1"
+    ))
+  } else {
+    data.frame()
+  }
   n_snapshots <- DBI::dbGetQuery(con, glue::glue("SELECT COUNT(*) AS n FROM ducklake_snapshots('{ducklake_alias}')"))$n
   size_bytes <- sum(file.info(list.files(db, recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE)
   had_load <- nrow(last_load) > 0

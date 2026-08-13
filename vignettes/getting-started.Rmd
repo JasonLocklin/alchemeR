@@ -11,31 +11,34 @@ vignette: >
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
 ```
 
-## Configure credentials
+## Configure
 
 alchemeR reads everything from the environment, never from arguments in your
-project source. Copy `system.file("extdata", "Renviron.example", package = "alchemeR")`
-to `.Renviron` (project) or `~/.Renviron` (user), and fill in your token and secret
-from **Account > Integrations > API Key**:
+project source. Copy
+`system.file("extdata", "Renviron.example", package = "alchemeR")` to
+`.Renviron` (project) or `~/.Renviron` (user), and fill in your token and
+secret from **Account > Integrations > API Key**:
 
 ```
 ALCHEMER_API_TOKEN=...
 ALCHEMER_API_SECRET=...
 ALCHEMER_DB=~/alchemer-db
+ALCHEMER_TZ=America/Toronto
 ```
 
-Restart R (or call `readRenviron(".Renviron")`) so the variables are picked up.
+Restart R (or call `readRenviron(".Renviron")`) to pick them up.
 
-If your account is outside the US, also set `ALCHEMER_DOMAIN` -- see
-`vignette("data-model")` for the regional domain list. Getting this wrong is,
-per Alchemer's own documentation, one of the most common causes of failed API
-calls.
+`ALCHEMER_DB` is a directory that will hold the archive. `ALCHEMER_TZ` is the
+timezone `pub`'s timestamps are presented in — set it to your Alchemer
+account's timezone. If your account is outside the US, also set
+`ALCHEMER_DOMAIN`; see `vignette("data-model")` for the regional list. Getting
+the domain wrong is, per Alchemer's own documentation, one of the most common
+causes of failed API calls.
 
-## First run: a dry run, then one small survey
+## First run
 
-`ingest()` downloads your **whole** account on a cold run, which can mean a lot
-of requests if you have a large or very active account. Before running it for
-real, see what it *would* do:
+A cold `ingest()` downloads your **whole** account, which can be a lot of
+requests. See what it would do first:
 
 ```{r}
 library(alchemeR)
@@ -43,52 +46,51 @@ library(alchemeR)
 ingest(dry_run = TRUE)
 ```
 
-This makes the same discovery and probe requests as a real run, but writes no
-data (it will create the empty database if `ALCHEMER_DB` doesn't exist yet).
-Once you're comfortable with the plan, try one small survey first:
+That makes the same discovery and probe requests as a real run but writes no
+data. Then try one small survey:
 
 ```{r}
 ingest(surveys = "YOUR_SMALL_SURVEY_ID")
-```
-
-Then check what landed:
-
-```{r}
 db_status()
 db_check()
 ```
 
-`db_status()` summarises survey/response counts and the most recent run.
-`db_check()` runs the integrity assertions `ingest()` already ran after that
-survey's commit -- useful confirmation that nothing is broken before trusting
-the database with everything.
+`db_status()` summarises what is stored and when it last ran. `db_check()`
+re-runs the integrity assertions `ingest()` already ran after that survey
+committed — cheap reassurance before trusting the database with everything.
 
 ## The real thing
 
 ```{r}
 ingest()      # every survey in the account
-pub_layer()   # typed tables + a wide view per survey
+pub_layer()   # tidy typed tables + a wide view per survey
 ```
 
-Subsequent calls to `ingest()` only refresh surveys that have actually
-changed (or that haven't been refreshed successfully in a while -- see
-`vignette("data-model")` for exactly how that's decided), so it's safe to run
-on a schedule. See `vignette("scheduling")` for that.
+Later `ingest()` calls only refresh surveys that actually changed, so it is
+safe to run on a schedule — see `vignette("scheduling")`.
 
 ## Using the data
 
+`pub` is ordinary tidy data. Use dplyr against it, or pull it into memory:
+
 ```{r}
-con <- alchemer_db()
+con <- alchemer_db(read_only = TRUE)
 
-# Tidy, typed, one row per response x question:
-dplyr::collect(alchemer_tbl(con, "pub.answers"))
+# one row per response x question
+alchemer_tbl(con, "pub.answers") |>
+  dplyr::filter(!is_deleted, !is.na(answer)) |>
+  dplyr::collect()
 
-# One row per respondent, the shape most analysts expect:
+# one row per respondent, the shape most analysts want
 survey_wide(con, "YOUR_SURVEY_ID")
 
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
 
-If you haven't run `pub_layer()` for a survey yet (or its wide view is
-stale), `survey_wide()` computes the same shape directly from `raw` on
-demand -- no need to wait for the next `pub_layer()` run.
+Use `read_only = TRUE` whenever you are only reading, and disconnect when you
+are done: an open read/write connection stops a scheduled `ingest()` from
+running at all, and an open read-only one delays it (see
+`vignette("scheduling")`).
+
+`survey_wide()` computes the wide shape on demand, straight from `raw` — handy
+for a survey you haven't run `pub_layer()` on yet.

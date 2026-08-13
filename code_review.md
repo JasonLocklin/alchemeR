@@ -3,6 +3,11 @@
 Reviewed at `worktree-refactor-1.0` (`b1e5fc7`, Phases 0–12 complete), ~2,000 LOC in
 `R/`, ~1,400 LOC of tests, 3 vignettes, 2 example scripts.
 
+> **Status: all findings resolved.** Everything below was fixed across three commits
+> (`2a00bec`, `64aa5ea`, `b545974`) plus a documentation pass. Each section records what
+> was decided and what changed; the review is kept as the record of *why*. Test suite:
+> 277 → 332 passing.
+
 ## How this was verified
 
 Not just read — exercised. Beyond `devtools::test()` (277 passing) and
@@ -101,23 +106,11 @@ right, but it was used to justify picking the option the evidence points *away* 
 strings, so ADR-004 is unaffected and `raw` is untouched. This is a `pub`-typing bug
 only, and re-running `pub_layer()` fixes it retroactively once the conversion changes.
 
-**Recommended fix.** Treat unsuffixed timestamps as being in the same zone the
-EST/EDT-suffixed fields already reveal (i.e. no shift), and make it configurable
-rather than assumed:
-
-```r
-# config.R
-alchemer_tz <- function(tz = NULL) tz %||% env_or("ALCHEMER_TZ", "America/Toronto")
-
-# pub_layer.R -- unsuffixed fields are account-local wall clock, per Alchemer's
-# own documented example, so there is nothing to convert.
-local_timestamp_sql <- function(column) glue::glue("TRY_CAST({column} AS TIMESTAMP)")
-```
-
-Keep `est_edt_timestamp_sql()` as it is — parsing the explicit suffix is correct and
-worth keeping rigorous. Add a `pub.responses` test asserting
-`date_updated >= date_started` for the documented fixture; that single assertion would
-have caught this.
+**Fixed** (`64aa5ea`). Unsuffixed timestamps are now cast with no shift, since they are
+already account-local. `est_edt_timestamp_sql()` still parses the explicit suffix into
+an exact instant — that part was right — and now renders it in the configured zone. A
+test asserts `date_updated > date_started`, the property that was false for every row;
+another proves `raw` is untouched whatever `tz` is used.
 
 ## H2. `America/Toronto` is hardcoded in a community-published package
 
@@ -131,9 +124,12 @@ Canadian region now work correctly" as a headline fix. A German or Australian us
 gets their timestamps silently shifted into Toronto wall-clock time with no setting to
 change and no error.
 
-**Recommended fix.** Same `ALCHEMER_TZ` knob as H1 (defaulting to `America/Toronto`
-preserves current behaviour for the primary user), plus a `pub_layer(tz =)` argument,
-and a line in `vignette("data-model")` under the timestamps section.
+**Fixed** (`64aa5ea`). New `ALCHEMER_TZ`, with a `pub_layer(tz =)` / `expunge(tz =)`
+argument, validated against `OlsonNames()` whether it arrives from the environment or an
+argument (it reaches SQL as a bare literal). It defaults to the machine's own timezone
+rather than to Toronto, and the docs say to set it explicitly for scheduled runs — an
+unset default that varies by machine would otherwise make `pub`'s values depend on which
+host ran `pub_layer()`. `Renviron.example` ships `America/Toronto` as the example value.
 
 ## H3. A read-only reader blocks the scheduled writer, and nothing retries
 
@@ -167,19 +163,22 @@ rollback path), and `load_pub_layer()` holds a read-only connection open for the
 duration of the copy to the analytics database. Both widen the window in which the
 lock is held.
 
-**Recommended fix.** Bounded retry with backoff on lock acquisition, since the
-failure is transient by nature:
+**Fixed** (`b545974`), with the policy the user chose: a reader is waited out for
+`lock_wait_s` (default 300) and then killed, because it holds no writes and cannot
+corrupt anything; a concurrent *writer* is never waited out or killed, since it may be
+partway through a refresh transaction.
 
-```r
-alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE,
-                        lock_wait_s = if (read_only) 0 else 300) { ... }
-```
+The two are told apart by `writer.lock`, which records the attaching writer's PID. What
+makes this robust is that the file's *existence* isn't the test — the PID in it is
+compared against the PID DuckDB names as actually holding the lock. A writer that
+crashed leaves the file behind but holds nothing, so the stale file self-heals instead
+of blocking every future run until someone deletes it by hand. `break_lock = FALSE`
+opts out of killing.
 
-Retry only on the `Could not set lock on file` branch, and abort with the existing
-message once the budget is exhausted. Then say plainly in `scheduling.Rmd` that a
-held read-only connection blocks writers, so analysts should disconnect rather than
-leaving a session attached, and cron jobs should be given a lock budget longer than a
-typical interactive read.
+Tested across genuinely separate `Rscript` processes, which is the only way this can be
+tested: DuckDB's lock is per-process, so two attachments from one R session never
+conflict and an in-process test would pass for something that fails in production.
+`scheduling.Rmd` now documents both directions in a table.
 
 ---
 
@@ -202,16 +201,9 @@ statistics for every survey it refreshes. That contradicts the archival premise 
 the flag-don't-delete rule; a dataset the run didn't even ask about should be inert,
 not wiped.
 
-**Recommended fix.** Skip the table entirely rather than replacing it with nothing:
-
-```r
-if ("campaigns" %in% include) {
-  replace_survey_rows(con, "survey_campaigns", survey_id, stamp(campaigns))
-}
-```
-
-and document that omitting a dataset leaves whatever was last ingested in place. Add
-a test for the two-run sequence above.
+**Fixed** (`b545974`). The table is skipped entirely rather than replaced with nothing,
+so omitting a dataset means "don't fetch it this run", never "delete it". A test runs the
+two-run sequence above.
 
 ## M2. Renaming a survey orphans its wide table in the analytics database, forever
 
@@ -233,13 +225,12 @@ pointing at it keep working and keep showing old data — the worst failure shap
 an analytics warehouse. The same applies to a survey that is expunged locally: its
 tables persist downstream.
 
-**Recommended fix.** This needs the load-state table from M3. Record the table names
-written on each successful load in `meta.loads`; on the next load, drop destination
-tables that this pipeline previously wrote and no longer produces. Scoping the drop
-to *previously recorded* names is what makes it safe — never "drop anything matching
-`wide_%`", which could hit a table the pipeline doesn't own. Until then, document it
-in `vignette("scheduling")` next to the existing full-overwrite trade-off paragraph:
-renaming a survey requires manually dropping the old table downstream.
+**Fixed** (`b545974`), using the `meta.loads` table from M3. Each load records the
+destination tables it wrote; the next load drops those it recorded and no longer
+produces. The drop is scoped to *previously recorded* names — never a pattern sweep like
+`wide_%`, which could hit a table the pipeline doesn't own — and a test asserts that a
+same-shaped table the pipeline didn't create survives. Wide views keep their readable
+titled names, per the user's call.
 
 ## M3. The Load stage keeps no state in the application database
 
@@ -259,11 +250,17 @@ nor `load_pipeline_health()` writes anything to `ALCHEMER_DB`. Consequences:
   the Load stage has been failing for a week.
 - M2 has nowhere to record what it wrote.
 
-**Recommended fix.** A `meta.loads` table (`load_id`, `started_at`, `finished_at`,
-`status`, `destination`, `n_tables`, `n_rows`, `tables` as JSON), written by
-`load_pub_layer()` outside any destination transaction (ADR-007's reasoning applies
-here too), and surfaced in `db_status()` so `load_pipeline_health()` carries it
-downstream.
+**Fixed** (`b545974`). New `meta.loads` (`load_id`, `started_at`, `finished_at`,
+`status`, `destination`, `n_tables`, `n_rows`, `tables` as JSON, `message`), written by
+`load_pub_layer()` on success *and* failure, and surfaced in `db_status()` so
+`load_pipeline_health()` carries it downstream — a monitor watching the analytics
+database can now tell a stalled extract from a stalled load. A failed load also raises
+(`alchemeR_load_error`) instead of returning quietly.
+
+The copy itself still runs over a read-only connection, so it doesn't hold the write
+lock for the duration; `meta.loads` is written afterwards over a short read/write one.
+`destination` records the driver class, never a connection string, which on several
+backends carries credentials.
 
 ## M4. `meta.integrity_checks` can only ever contain passes
 
@@ -280,44 +277,43 @@ ADR-007's own logic covers this ("failure records must outlive the failure") and
 `update_survey_state()` already does exactly the right thing three lines further down
 — write after the rollback, in autocommit. The integrity checks should follow it.
 
-Also: `db_check.R:1-5`'s comment says `ingest()` "persists them to
-`meta.integrity_checks` after every survey commit". It writes them *before* the commit,
-inside the transaction.
-
-**Recommended fix.** Return `checks` from the tryCatch and write them after
-`COMMIT`/`ROLLBACK`, whichever ran.
+**Fixed** (`b545974`). `checks` is now written after `COMMIT`/`ROLLBACK`, whichever ran,
+so failures are recorded. The regression test needed a failure the refresh couldn't
+erase — anything injected into `raw` beforehand is replaced before the checks run — so it
+uses a list endpoint returning the same response twice, which is what an overlapping page
+would look like, and is exactly the case DuckLake cannot declare a constraint against.
 
 ## M5. ETL terminology
 
-You asked for this specifically. The scripts are fixed (see above); what remains is
-conceptual, in prose.
-
 **What the pipeline actually is:** Extract (Alchemer API) → Load (`raw`, verbatim and
 untyped) → Transform (`pub`, in place) → Load (analytics database). The first three
-stages are **ELT**, deliberately: ADR-003 forbids transforming before landing, and
-that is the design's main safety property, not an implementation detail. Calling the
-whole thing "an ETL pipeline" is fine as a label for the end-to-end job — that is
-ordinary industry usage and it is what the user asked for — but the docs should not
-imply `ingest()` transforms.
+stages are **ELT**, deliberately: ADR-003 forbids transforming before landing, and that
+is the design's main safety property, not an implementation detail. Calling the
+end-to-end job "an ETL pipeline" is ordinary usage and fine; what the docs must not do is
+imply `ingest()` transforms — which `etl_pipeline.R` did, heading it "Extract +
+Transform".
 
-- `README.Rmd:29` — "`load_pub_layer()` completes the ETL pipeline" is accurate for
-  the whole job. Consider one clarifying clause: the local stages are ELT (land
-  verbatim, transform in place), and `load_pub_layer()` is the final Load.
-- `README.Rmd` has no Load example even though it advertises the capability; every
-  other function gets a snippet. Worth three lines.
-- `db_status()` is described in `load.R:71` as a "pipeline-health summary". It is an
-  *ingest* health summary (see M3).
-- `vignette("data-model")` never uses the words extract/load/transform at all, which
-  is fine for a schema reference, but the `raw`/`pub` split is exactly the
-  bronze/silver distinction and one sentence naming it would help anyone arriving
-  from a data-engineering background.
-- Correct and worth keeping: `load.R`'s header calling itself "the 'L' of an ETL
-  pipeline"; "full overwrite, never an incremental upsert"; the explicit
-  idempotency claim.
+**Fixed** across the commits and the documentation pass:
+
+- The scripts now name each stage correctly (Extract + Load / Transform / Load), with a
+  one-line note that nothing is transformed at ingest and why.
+- `README` states the stage table up front, names the pattern as ELT with the reason in
+  one clause, and gives the bronze/silver equivalence for readers arriving from data
+  engineering — then gets straight to code. It now has a Load example.
+- `vignette("data-model")` opens with a schema-to-stage table, so the ETL vocabulary and
+  the `raw`/`pub`/`meta` names are introduced together.
+- `db_status()` genuinely is a pipeline-health summary now that it covers both stages
+  (M3), so `load.R`'s description became true rather than being reworded.
+- `vignette("scheduling")` was retitled "Running the pipeline unattended" — it covers the
+  Load stage and monitoring, not just `ingest()`.
+
+Prose throughout was cut for length at the same time: the wordier passages were
+explaining decisions at a length that belonged in code comments (where most of them
+already are) rather than in a user-facing document.
 
 ---
 
-## Low
+## Low — all fixed in `b545974`
 
 - **`meta.runs.n_requests` is always `NULL`** (`R/ingest.R:285,373`). A declared
   operational metric that nothing populates — and it is the metric Phase 6's
@@ -366,25 +362,29 @@ imply `ingest()` transforms.
 
 ---
 
-## Questions
+## Decisions taken
 
-1. **H1/H2 — timezones.** Do you want me to make the change? My reading of the
-   evidence is that unsuffixed Alchemer timestamps are account-local, not UTC, which
-   makes `pub.responses.date_updated` currently wrong by 4–5 hours for every row. The
-   fix is small (one SQL helper plus a config knob) and `pub` is rebuildable, so
-   nothing is lost by changing it. I stopped short because it changes the meaning of
-   stored values, and because confirming it against your account takes one API call
-   that I can't make: fetch any response and compare `date_submitted` to
-   `date_updated`. If they read within seconds of each other, the UTC assumption is
-   wrong.
-2. **H3 — lock contention.** Is a retry budget on `alchemer_db()` the behaviour you
-   want, or would you rather the scheduled job fail loudly and be retried by cron?
-   Retrying inside the package is friendlier but hides contention; failing fast keeps
-   the signal.
-3. **M2/M3 — `meta.loads`.** Worth building, or is dropping stale downstream tables
-   by hand acceptable at your scale? It is the one finding that adds a table and real
-   code rather than tightening what's there.
-4. **Wide views in the warehouse.** Loading them makes the destination table set
-   change whenever a survey is renamed (M2). Would you rather load only the five
-   fixed `pub` tables and let the warehouse pivot, keeping the destination schema
-   stable?
+1. **Timezones (H1/H2).** `raw` stays whatever Alchemer sent; `pub` is local time, set by
+   `ALCHEMER_TZ` rather than hardcoded. Worth confirming against the live account once
+   credentials exist — fetch any response and compare `date_submitted` with
+   `date_updated`. Reading within seconds of each other confirms the new behaviour;
+   five hours apart would mean the old UTC assumption was right after all.
+2. **Lock contention (H3).** Writers record a lockfile and a second writer fails fast; a
+   reader is waited out 5 minutes and then killed as stuck.
+3. **Load state (M2/M3).** `meta.loads` built, with scoped cleanup of stale destination
+   tables.
+4. **Wide views** keep their titled names downstream; the `meta.loads` cleanup is what
+   handles renames.
+
+## Still worth knowing
+
+- **The reader-kill is destructive to a person, not to data.** An analyst who leaves a
+  read-only session open past the 5-minute budget loses it with no warning at their end.
+  `getting-started.Rmd` now tells analysts to disconnect when done, which is the only
+  mitigation that doesn't reintroduce the blocking problem.
+- **Nothing here has run against the real API.** Every finding above was verified against
+  fixtures and a real local DuckLake database, but no Alchemer credentials exist in this
+  environment (ADR-010). The first live run is still the first live run — `ingest(dry_run
+  = TRUE)`, then one small survey, then `db_check()`, as `getting-started.Rmd` sets out.
+- **One lint remains**, a false positive: `object_usage_linter` cannot see
+  `fixture_path()` in `test-parse.R` because it's defined in a sibling helper file.

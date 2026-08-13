@@ -56,7 +56,10 @@ local_lock_holder <- function(db, read_only = FALSE, env = parent.frame()) {
     }
   }
   if (is.na(pid)) {
-    skip(paste("lock holder subprocess did not start:", paste(readLines(out, warn = FALSE), collapse = " ")))
+    testthat::skip(paste(
+      "lock holder subprocess did not start:",
+      paste(readLines(out, warn = FALSE), collapse = " ")
+    ))
   }
 
   withr::defer(

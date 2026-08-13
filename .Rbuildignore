@@ -9,6 +9,7 @@
 ^plan.*$
 ^docs$
 ^ingest_spec\.md$
+^code_review\.md$
 ^_pkgdown\.yml$
 ^pkgdown$
 ^\.lintr$

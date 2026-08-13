@@ -126,6 +126,19 @@ meta_table_columns <- lapply(meta_tables, table_columns)
 # risk to guard against, so there is no pub_table_columns here to parallel
 # raw_table_columns/meta_table_columns above.
 
+# For read-only callers, which can't run ensure_schema(): a database last
+# opened by an older version of the package is missing any table added since,
+# and a read-only connection has no way to add it. Reading such a table has to
+# degrade to "no rows", not error.
+table_exists <- function(con, schema, table) {
+  DBI::dbGetQuery(con, glue::glue(
+    "SELECT COUNT(*) AS n FROM information_schema.tables
+     WHERE table_catalog = {DBI::dbQuoteString(con, ducklake_alias)}
+       AND table_schema = {DBI::dbQuoteString(con, schema)}
+       AND table_name = {DBI::dbQuoteString(con, table)}"
+  ))$n > 0
+}
+
 create_tables <- function(con, schema, tables) {
   DBI::dbExecute(con, glue::glue("CREATE SCHEMA IF NOT EXISTS {ducklake_alias}.{schema}"))
   for (name in names(tables)) {
