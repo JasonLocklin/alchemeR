@@ -102,6 +102,30 @@ knowing:
 Configure the destination with `ANALYTICS_DB_*` variables — see
 `Renviron.example`.
 
+## Maintenance
+
+Two jobs, neither of which `ingest()` does for you:
+
+```
+# Weekly: merge the small files each refresh leaves behind
+0 3 * * 0 Rscript -e 'alchemeR::compact()' >> /path/to/maintenance.log 2>&1
+
+# Monthly: trim time travel to your retention window, reclaiming the files
+0 4 1 * * Rscript -e 'alchemeR::expire_history(older_than = Sys.Date() - 365)' >> /path/to/maintenance.log 2>&1
+```
+
+`compact()` matters because each refresh writes a small Parquet file per survey
+that changed, and DuckLake's guidance is that files should be at least a few
+megabytes. It doesn't touch snapshots, so it is safe to run as often as you
+like. `expire_history()` is the one that shortens how far back you can time
+travel — pick its cutoff to match your retention policy, since that is exactly
+what it enforces.
+
+`expunge()` is the third, but it is not a scheduled job: it permanently removes
+specific data and its history, for a retention obligation or a deletion
+request. See `?expunge` for what it takes to make values genuinely
+unrecoverable.
+
 ## Monitoring
 
 `db_status()` is the one-row summary of both stages: counts, size, and the

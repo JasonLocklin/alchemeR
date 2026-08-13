@@ -408,10 +408,55 @@ documentation. Worth recording because neither was visible from the code alone:
 - **The catalog choice (see H3 above).** The single-client restriction was the DuckDB
   catalog's, not DuckLake's.
 
-The general lesson: both were assumptions inherited from the original plan that the
-format's documentation contradicts. Worth re-reading `docs/ducklake-docs.md` against
-the remaining design choices — particularly partitioning and `target_file_size`, which
-this package has never tuned.
+### Storage tuning, evaluated against the docs (`d0f9e4a`)
+
+Partitioning and `target_file_size` were then evaluated the same way. Both were left
+alone, on evidence — but the evaluation turned up three things that were wrong:
+
+- **`expunge()` did not remove the data from disk.** *Verified* by searching the raw
+  bytes of the database directory for a known answer string: after `expunge()`, the
+  value was still there. It survived in three separate places, each needing its own
+  step, all now implemented and covered by a byte-level regression test: small writes
+  are *inlined into the catalog* and deleting an inlined row only stamps its
+  `end_snapshot` (so inlined data must be flushed to Parquet **before** deleting);
+  DuckLake deletes are merge-on-read, so the row stays in its Parquet file behind a
+  marker (needs `rewrite_data_files(delete_threshold => 0)`); and the catalog stores
+  **verbatim per-column min/max statistics** — including for `survey_data`, so answer
+  JSON sits in the catalog as a statistic — which SQLite keeps in freed pages until
+  `VACUUM`. For a function whose stated purpose is that data cannot be recovered, this
+  was the most serious finding in this review.
+- **`expire_history()` reclaimed nothing.** `ducklake_cleanup_old_files()` honours a
+  grace period unless passed `cleanup_all => true`. *Measured*: 21 files before, 21
+  after, 1 with the flag. Its documentation claimed it reclaimed files; now it does.
+- **Nothing ever ran maintenance.** `compact()` existed but no script or vignette
+  called it, and the merge-based refresh writes a small Parquet file per changed survey
+  — roughly 96 a day for one actively-collecting survey. `vignette("scheduling")` now
+  carries weekly `compact()` and monthly `expire_history()` cron lines.
+
+On the two settings themselves:
+
+- **Don't partition.** Partitioning `raw.responses` by `survey_id` was measured against
+  not partitioning: both pruned a per-survey query to a **single file read** (DuckLake
+  keeps per-file min/max statistics, and since a refresh writes one survey per file
+  those are already perfectly selective), with identical query times. The difference was
+  compaction — 200 files merged to **1** unpartitioned, but to **40** partitioned, one
+  per partition, permanently fragmenting storage against DuckLake's own advice that
+  files be at least a few megabytes. Cheap to revisit if the archive ever gets large
+  enough for one compacted file to hurt: partition keys apply only to newly written
+  data, so nothing needs rewriting.
+- **Leave `target_file_size` at 512MB.** It is the size compaction aims for, and at this
+  scale the whole archive fits in one such file. Lowering it would fragment storage for
+  no gain.
+- **`data_inlining_row_limit` was dead configuration.** It had been overridden to 1000,
+  chosen for a write pattern that no longer exists — and *verified*, inlining does not
+  apply to `MERGE` inserts at all, so it had stopped affecting `raw` entirely. Removed;
+  DuckLake's default of 10 now does exactly the right thing, keeping small `meta` writes
+  in the catalog and all `raw` data in Parquet.
+
+The general lesson across all five: these were assumptions inherited from the original
+plan that the format's own documentation contradicts, and none was visible from the R
+code alone. Two of them — the catalog choice and expungement — were only caught because
+the user went and read the docs.
 
 ## Still worth knowing
 

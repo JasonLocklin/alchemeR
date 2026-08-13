@@ -1,3 +1,22 @@
+seed_many_small_files <- function(dir, batches) {
+  # Each batch must exceed DuckLake's data_inlining_row_limit (10), or it is
+  # written into the catalog rather than to a Parquet file and there would be
+  # nothing for compaction to merge.
+  con <- alchemer_db(dir)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  for (b in seq_len(batches)) {
+    rows <- data.frame(
+      survey_id = "1", response_id = sprintf("b%02d-r%02d", b, 1:20),
+      payload = paste0('{"pad": "', strrep("y", 2000), '"}'), is_deleted = FALSE
+    )
+    duckdb::duckdb_register(con, "seed_batch", rows)
+    DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+      (survey_id, response_id, payload, is_deleted) SELECT * FROM seed_batch")
+    duckdb::duckdb_unregister(con, "seed_batch")
+  }
+  invisible(batches * 20)
+}
+
 seed_maintenance_db <- function(dir) {
   con <- alchemer_db(dir)
   DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S1', FALSE)")
@@ -182,6 +201,84 @@ test_that("expunge() removes the pub copy of the data too, not just raw", {
   wide <- DBI::dbGetQuery(con, "SELECT table_name FROM information_schema.tables
     WHERE table_schema = 'pub' AND table_name LIKE 'wide%'")$table_name
   expect_length(wide, 0)
+})
+
+test_that("expunge() removes the values from disk, not just from query results", {
+  # The guarantee expunge() exists for, checked the only way that means
+  # anything: search the raw bytes of the database directory for the answer
+  # text. A DELETE alone leaves it recoverable in three places -- the pub copy,
+  # the Parquet file behind a delete marker, and the catalog, which stores
+  # verbatim per-column min/max statistics (survey_data included) in pages
+  # SQLite does not zero until VACUUM.
+  skip_if_not_installed("RSQLite")
+  secret <- "AAA-EXPUNGE-ME-SECRET-ANSWER"
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  # Uncompressed Parquet purely so the bytes are searchable; snappy would hide
+  # the value from this test without hiding it from anyone with a Parquet reader.
+  DBI::dbExecute(con, "CALL alchemer.set_option('parquet_compression', 'uncompressed')")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted)
+    VALUES ('1', 'Doomed', FALSE), ('2', 'Keeper', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.survey_questions
+    (survey_id, question_id, question_order, shortname) VALUES ('1', '2', 1, 'q'), ('2', '2', 1, 'q')")
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.responses (survey_id, response_id, survey_data, is_deleted) VALUES
+     ('1', 'r1', '{{\"2\": {{\"answer\": \"{secret}\"}}}}', FALSE),
+     ('2', 'r2', '{{\"2\": {{\"answer\": \"survivor-answer\"}}}}', FALSE)"
+  ))
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  on_disk <- function(needle) {
+    files <- list.files(dir, recursive = TRUE, full.names = TRUE)
+    any(vapply(files, function(f) {
+      raw <- readBin(f, "raw", file.size(f))
+      printable <- rawToChar(raw[raw > as.raw(31) & raw < as.raw(127)])
+      grepl(needle, printable, fixed = TRUE)
+    }, logical(1)))
+  }
+  expect_true(on_disk(secret)) # the test can detect it at all
+
+  expunge(dir, survey_id = "1")
+
+  expect_false(on_disk(secret))
+  # ...and the survey that was not expunged is untouched.
+  expect_true(on_disk("survivor-answer"))
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT survey_id FROM alchemer.raw.responses")$survey_id, "2")
+  expect_equal(DBI::dbGetQuery(con, "SELECT survey_id FROM alchemer.pub.answers")$survey_id, "2")
+})
+
+test_that("expire_history() actually reclaims the files it expires", {
+  # cleanup_old_files() without cleanup_all => true honours a grace period and
+  # reclaims nothing -- measured at 21 files before and after. expire_history()
+  # documents that it reclaims, so it has to pass the flag.
+  dir <- withr::local_tempdir()
+  seed_many_small_files(dir, batches = 12)
+  compact(dir) # merges the small files, leaving the originals for time travel
+  before <- length(list.files(dir, pattern = "\\.parquet$", recursive = TRUE))
+
+  expire_history(dir, older_than = Sys.time())
+
+  after <- length(list.files(dir, pattern = "\\.parquet$", recursive = TRUE))
+  expect_lt(after, before)
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 240)
+})
+
+test_that("compact() merges the small files each refresh leaves behind", {
+  dir <- withr::local_tempdir()
+  seed_many_small_files(dir, batches = 12)
+
+  out <- compact(dir)
+  expect_gt(sum(out$merged$files_processed), 1)
+  expect_equal(sum(out$merged$files_created), 1)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 240)
 })
 
 test_that("expunge() requires survey_id or before_date", {

@@ -37,10 +37,32 @@ through time travel either. Exactly one of \code{survey_id}/\code{before_date} m
 be supplied.
 }
 \details{
-The matching \code{pub} rows go too. \code{pub.responses}/\code{pub.answers} hold a
-\emph{second copy} of the answer text (\code{pub.answers.answer} is the verbatim
-string), so deleting only from \code{raw} would leave the expunged data fully
-readable -- and, worse, would leave it as the only remaining copy once
-history is expired, then push it downstream on the next
-\code{\link[=load_pub_layer]{load_pub_layer()}} run.
+Removing the rows is only the first of four steps, because a \code{DELETE} alone
+leaves the values recoverable from disk in three separate places. Each was
+verified by searching the raw bytes of the database directory for a known
+answer string:
+\enumerate{
+\item \strong{Inlined rows.} A small write goes into the catalog rather than into a
+Parquet file, and deleting an inlined row only stamps its \code{end_snapshot}
+-- the row and its values stay in the catalog table. So the inlined data
+is flushed to Parquet \emph{before} anything is deleted.
+\item \strong{The matching \code{pub} rows.} \code{pub.answers.answer} is a verbatim copy of
+the answer text, so deleting only from \code{raw} leaves the data fully
+readable by SQL -- and leaves it as the \emph{only} remaining copy once
+history is expired, ready to be pushed downstream by the next
+\code{\link[=load_pub_layer]{load_pub_layer()}}.
+\item \strong{The Parquet files.} DuckLake deletes are merge-on-read: the row stays
+in its data file behind a delete marker. A file that still holds
+surviving rows is not removed by expiry, so it must be rewritten without
+the deleted rows (\verb{ducklake_rewrite_data_files(delete_threshold => 0)}).
+\item \strong{The catalog's statistics.} DuckLake records per-file \strong{verbatim}
+minimum and maximum values for every column, \code{survey_data} included --
+so a response's answer JSON can sit in the catalog as a statistic.
+Deleting the statistic is not enough either: SQLite leaves freed pages in
+place until the file is \code{VACUUM}ed.
+}
+
+Step 3 needs the \code{RSQLite} package. DuckDB's own \code{sqlite} extension cannot
+run \code{VACUUM} (it accepts the statement but does not rebuild the file, and
+its \code{sqlite_query()} pass-through rejects statements that return no rows).
 }

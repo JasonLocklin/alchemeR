@@ -21,7 +21,34 @@
 
 ducklake_alias <- "alchemer"
 ducklake_min_version <- "1.0"
-data_inlining_row_limit <- 1000L
+
+# --- Storage tuning, and what was deliberately left alone -------------------
+#
+# `data_inlining_row_limit` is left at DuckLake's default (10). This used to be
+# overridden to 1000, chosen when a refresh wrote a survey's rows wholesale.
+# It no longer does anything for `raw`: *verified*, inlining does not apply to
+# `MERGE` inserts, which is how every raw row is now written, so raw data always
+# lands in Parquet. The default does exactly what is wanted for the tables that
+# still use plain INSERT -- `meta.runs`, `run_events`, `integrity_checks`,
+# `survey_state`, `loads` all write a handful of rows at a time and land
+# in the catalog, where operational records belong.
+#
+# `target_file_size` is left at the default 512MB. It is the size compaction
+# aims for, and at this package's scale the whole archive fits inside one such
+# file: *measured*, compaction merged 200 small files into 1. Lowering it would
+# fragment storage for no gain.
+#
+# `raw.responses` is deliberately **not** partitioned. Partitioning by
+# survey_id was measured against not partitioning: both pruned a per-survey
+# query to a single file read (DuckLake keeps per-file min/max statistics, and
+# because a refresh writes one survey per file, those statistics are already
+# perfectly selective), and query time was identical within noise. What differed
+# was compaction: unpartitioned, 200 files merged into 1; partitioned, into 40
+# -- one per partition, permanently fragmenting storage against DuckLake's own
+# advice that files be at least a few megabytes. If the archive ever grows large
+# enough for a single compacted file to hurt, this is cheap to revisit:
+# `ALTER TABLE ... SET PARTITIONED BY (survey_id)` affects only newly written
+# data, so no rewrite of existing data is needed.
 
 # Best-effort: `INSTALL` needs network access once; if the extension is
 # already present (e.g. pre-staged for an air-gapped install), a failed
@@ -75,15 +102,11 @@ alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE) {
   # json/sqlite/ducklake instead of a surprise network fetch mid-query.
   install_and_load(con, "icu")
 
-  options_sql <- if (read_only) {
-    "READ_ONLY"
-  } else {
-    glue::glue("DATA_INLINING_ROW_LIMIT {data_inlining_row_limit}")
-  }
+  options_sql <- if (read_only) ", READ_ONLY" else ""
   attach_sql <- glue::glue(
     "ATTACH {DBI::dbQuoteString(con, paste0('ducklake:sqlite:', catalog_path))} ",
     "AS {ducklake_alias} ",
-    "(DATA_PATH {DBI::dbQuoteString(con, paste0(data_dir, '/'))}, {options_sql})"
+    "(DATA_PATH {DBI::dbQuoteString(con, paste0(data_dir, '/'))}{options_sql})"
   )
 
   tryCatch(

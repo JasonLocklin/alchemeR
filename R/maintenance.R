@@ -60,20 +60,57 @@ db_status <- function(db = alchemer_db_path()) {
 
 #' Compact the application database
 #'
-#' Flushes small inlined commits to Parquet and merges adjacent files
-#' (`ducklake_flush_inlined_data()`, `ducklake_merge_adjacent_files()`) --
-#' the answer to "1-2 responses/day must not balloon storage" once those
-#' tiny daily commits have accumulated (plan.md §2.2).
+#' Flushes inlined commits to Parquet, merges the small files repeated
+#' refreshes leave behind, and rewrites files that have accumulated enough
+#' delete markers to slow reads.
 #'
 #' @param db Application database directory. Defaults to [alchemer_db_path()].
-#' @return Invisibly, a list with `flushed` and `merged` result tibbles.
+#' @return Invisibly, a list with `flushed`, `merged`, and `rewritten` results.
+#' @details
+#' Run this on a schedule -- weekly is usually plenty. Each refresh writes a
+#' small Parquet file per survey that changed, so an active account accumulates
+#' many small files, and DuckLake's own guidance is that files should be at
+#' least a few megabytes. *Measured*: 200 small files compacted to one.
+#'
+#' Deliberately does **not** expire snapshots, so it can be scheduled freely
+#' without shortening how far back time travel reaches -- that is
+#' [expire_history()]'s job. (DuckDB's `CHECKPOINT` statement bundles both,
+#' which is why this calls the individual functions instead.)
 #' @export
 compact <- function(db = alchemer_db_path()) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
   flushed <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_flush_inlined_data('{ducklake_alias}')"))
   merged <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_merge_adjacent_files('{ducklake_alias}')"))
-  invisible(list(flushed = flushed, merged = merged))
+  # Updates are delete-plus-insert underneath, so files accumulate delete
+  # markers that slow reads until the file is rewritten without them. Left at
+  # DuckLake's default threshold (rewrite once 95% of a file is deleted);
+  # expunge() drops the threshold to 0 because it needs every deleted row
+  # physically gone, not just most of them.
+  rewritten <- rewrite_deleted_files(con)
+  invisible(list(flushed = flushed, merged = merged, rewritten = rewritten))
+}
+
+# `CALL`, wrapped in an explicit transaction: the table-function form
+# (`SELECT * FROM ducklake_rewrite_data_files(...)`) fails with "Scanning a
+# DuckLake table after the transaction has ended", and the bare CALL hits the
+# same error outside a transaction.
+rewrite_deleted_files <- function(con, delete_threshold = NULL) {
+  threshold <- if (is.null(delete_threshold)) "" else glue::glue(", delete_threshold => {delete_threshold}")
+  DBI::dbExecute(con, "BEGIN")
+  out <- tryCatch(
+    {
+      DBI::dbExecute(con, glue::glue("CALL ducklake_rewrite_data_files('{ducklake_alias}'{threshold})"))
+      DBI::dbExecute(con, "COMMIT")
+      TRUE
+    },
+    error = function(e) {
+      DBI::dbExecute(con, "ROLLBACK")
+      cli::cli_warn(c("Could not rewrite deleted data files.", "x" = conditionMessage(e)))
+      FALSE
+    }
+  )
+  invisible(out)
 }
 
 #' Trim time-travel history
@@ -95,7 +132,18 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
   DBI::dbExecute(con, glue::glue(
     "CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => {cutoff})"
   ))
-  DBI::dbExecute(con, glue::glue("CALL ducklake_cleanup_old_files('{ducklake_alias}')"))
+  cleanup_files(con)
+  invisible(TRUE)
+}
+
+# `cleanup_all => true` matters: without it, cleanup_old_files() honours a grace
+# period for files that might still be open elsewhere and reclaims nothing.
+# *Measured*: 21 files before, 21 after without the flag, 1 with it. This
+# function claims to reclaim the files it expires, so it has to pass it.
+cleanup_files <- function(con) {
+  DBI::dbExecute(con, glue::glue(
+    "CALL ducklake_cleanup_old_files('{ducklake_alias}', cleanup_all => true)"
+  ))
   invisible(TRUE)
 }
 
@@ -118,12 +166,33 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
 #' @param tz Timezone `before_date` is read in. Defaults to `ALCHEMER_TZ`,
 #'   then the machine's own timezone (see [alchemer_tz()]).
 #' @details
-#' The matching `pub` rows go too. `pub.responses`/`pub.answers` hold a
-#' *second copy* of the answer text (`pub.answers.answer` is the verbatim
-#' string), so deleting only from `raw` would leave the expunged data fully
-#' readable -- and, worse, would leave it as the only remaining copy once
-#' history is expired, then push it downstream on the next
-#' [load_pub_layer()] run.
+#' Removing the rows is only the first of four steps, because a `DELETE` alone
+#' leaves the values recoverable from disk in three separate places. Each was
+#' verified by searching the raw bytes of the database directory for a known
+#' answer string:
+#'
+#' 1. **Inlined rows.** A small write goes into the catalog rather than into a
+#'    Parquet file, and deleting an inlined row only stamps its `end_snapshot`
+#'    -- the row and its values stay in the catalog table. So the inlined data
+#'    is flushed to Parquet *before* anything is deleted.
+#' 2. **The matching `pub` rows.** `pub.answers.answer` is a verbatim copy of
+#'    the answer text, so deleting only from `raw` leaves the data fully
+#'    readable by SQL -- and leaves it as the *only* remaining copy once
+#'    history is expired, ready to be pushed downstream by the next
+#'    [load_pub_layer()].
+#' 3. **The Parquet files.** DuckLake deletes are merge-on-read: the row stays
+#'    in its data file behind a delete marker. A file that still holds
+#'    surviving rows is not removed by expiry, so it must be rewritten without
+#'    the deleted rows (`ducklake_rewrite_data_files(delete_threshold => 0)`).
+#' 4. **The catalog's statistics.** DuckLake records per-file **verbatim**
+#'    minimum and maximum values for every column, `survey_data` included --
+#'    so a response's answer JSON can sit in the catalog as a statistic.
+#'    Deleting the statistic is not enough either: SQLite leaves freed pages in
+#'    place until the file is `VACUUM`ed.
+#'
+#' Step 3 needs the `RSQLite` package. DuckDB's own `sqlite` extension cannot
+#' run `VACUUM` (it accepts the statement but does not rebuild the file, and
+#' its `sqlite_query()` pass-through rejects statements that return no rows).
 #' @return Invisibly, `TRUE`.
 #' @export
 expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL,
@@ -132,8 +201,23 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
   if (is.null(survey_id) && is.null(before_date)) {
     cli::cli_abort("Supply survey_id or before_date.", class = "alchemeR_config_error")
   }
+  # Checked before anything is deleted, not after: a half-expunged database --
+  # rows gone from SQL but values still recoverable from the catalog -- is the
+  # worst possible outcome for a function whose whole purpose is that they are
+  # not recoverable.
+  rlang::check_installed(
+    "RSQLite",
+    "to vacuum the catalog so expunged values cannot be recovered from it."
+  )
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+
+  # Step 1 of the four in @details, and it has to come *before* the deletes:
+  # a small write is inlined into the catalog rather than written to Parquet,
+  # and deleting an inlined row only stamps its end_snapshot -- the row, values
+  # and all, stays in the catalog table. Flushing first moves everything into
+  # Parquet files, where a delete can actually be made to remove it.
+  DBI::dbExecute(con, glue::glue("CALL ducklake_flush_inlined_data('{ducklake_alias}')"))
 
   DBI::dbExecute(con, "BEGIN")
   tryCatch(
@@ -203,7 +287,28 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
     drop_existing_wide_views(con, as.character(survey_id))
   }
 
+  # Step 3 of the four in @details: rewrite every file that now holds a delete
+  # marker, at threshold 0 so a single expunged row is enough to warrant it.
+  # Without this the values stay in their Parquet file -- unreadable by SQL,
+  # but plainly there in the bytes.
+  rewrite_deleted_files(con, delete_threshold = 0)
   DBI::dbExecute(con, glue::glue("CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => now())"))
-  DBI::dbExecute(con, glue::glue("CALL ducklake_cleanup_old_files('{ducklake_alias}')"))
+  cleanup_files(con)
+
+  # Step 4: the catalog. Must run with no connection attached to it, so the
+  # DuckLake connection is closed first rather than at on.exit.
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  on.exit()
+  vacuum_catalog(db)
+  invisible(TRUE)
+}
+
+# Rebuilds catalog.sqlite so freed pages -- which can still hold verbatim
+# column statistics for expunged rows -- are gone from the file.
+vacuum_catalog <- function(db) {
+  catalog <- file.path(normalizePath(db, mustWork = FALSE), "catalog.sqlite")
+  con <- DBI::dbConnect(RSQLite::SQLite(), catalog)
+  on.exit(DBI::dbDisconnect(con), add = TRUE)
+  DBI::dbExecute(con, "VACUUM")
   invisible(TRUE)
 }

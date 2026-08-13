@@ -84,9 +84,16 @@ DBI::dbGetQuery(con, "SELECT * FROM ducklake_snapshots('alchemer')") # every com
 **History depth and retention are the same knob.** `expire_history(db,
 older_than)` trims how far back time travel reaches and reclaims the files;
 querying an expired version then fails cleanly rather than returning wrong
-data. `expunge()` goes further — it deletes rows from `raw` *and* `pub` and
-expires their history together, for data that must actually leave the database
-rather than just become hard to find.
+data. `compact()` merges the small files each refresh leaves behind without
+touching history. Schedule both — see `vignette("scheduling")`.
+
+`expunge()` goes further: it removes rows and their history for data that must
+actually leave the database rather than just become hard to find. That takes
+more than a `DELETE`, because DuckLake keeps deleted rows in their Parquet file
+behind a delete marker, inlines small writes into the catalog, and stores
+verbatim per-column minimum and maximum values as statistics. `?expunge`
+documents all four steps; the short version is that `expunge()` handles them
+and a hand-written `DELETE` does not.
 
 ## Deletions are flagged, never dropped
 

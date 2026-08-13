@@ -10,11 +10,21 @@ compact(db = alchemer_db_path())
 \item{db}{Application database directory. Defaults to \code{\link[=alchemer_db_path]{alchemer_db_path()}}.}
 }
 \value{
-Invisibly, a list with \code{flushed} and \code{merged} result tibbles.
+Invisibly, a list with \code{flushed}, \code{merged}, and \code{rewritten} results.
 }
 \description{
-Flushes small inlined commits to Parquet and merges adjacent files
-(\code{ducklake_flush_inlined_data()}, \code{ducklake_merge_adjacent_files()}) --
-the answer to "1-2 responses/day must not balloon storage" once those
-tiny daily commits have accumulated (plan.md §2.2).
+Flushes inlined commits to Parquet, merges the small files repeated
+refreshes leave behind, and rewrites files that have accumulated enough
+delete markers to slow reads.
+}
+\details{
+Run this on a schedule -- weekly is usually plenty. Each refresh writes a
+small Parquet file per survey that changed, so an active account accumulates
+many small files, and DuckLake's own guidance is that files should be at
+least a few megabytes. \emph{Measured}: 200 small files compacted to one.
+
+Deliberately does \strong{not} expire snapshots, so it can be scheduled freely
+without shortening how far back time travel reaches -- that is
+\code{\link[=expire_history]{expire_history()}}'s job. (DuckDB's \code{CHECKPOINT} statement bundles both,
+which is why this calls the individual functions instead.)
 }
