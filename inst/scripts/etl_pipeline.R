@@ -17,13 +17,17 @@
 
 library(alchemeR)
 
-# --- Extract + Transform ------------------------------------------------
+# --- Extract + Load (into the local application database) ----------------
+# ingest() deliberately does no transforming: it lands Alchemer's payloads in
+# `raw` verbatim and untyped, so a new question type can never fail a run.
 
 result <- ingest()
 cli::cli_inform(paste0(
   "ingest(): {sum(result$status == 'ok')} refreshed, ",
   "{sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed."
 ))
+
+# --- Transform (still inside the local application database) --------------
 
 pub_layer()
 
@@ -36,7 +40,7 @@ if (!all(checks$passed)) {
   print(checks[!checks$passed, ])
 }
 
-# --- Load ----------------------------------------------------------------
+# --- Load (into the external analytics database) ---------------------------
 # odbc + a DSN (or a full connection string) is one way to reach SQL Server;
 # any DBI backend works identically for the calls below.
 
@@ -49,10 +53,16 @@ dest <- DBI::dbConnect(
   PWD = Sys.getenv("ANALYTICS_DB_PWD"), # or keyring::key_get("analytics_db", "password")
   TrustServerCertificate = "yes"
 )
-on.exit(DBI::dbDisconnect(dest), add = TRUE)
+# `finally`, not on.exit(): on.exit() only fires when a *function* exits, so it
+# does nothing at the top level of a script -- the connection would stay open
+# until the process ended, and leak outright if a load threw partway.
+tryCatch(
+  {
+    schema <- Sys.getenv("ANALYTICS_DB_SCHEMA", "dbo")
+    load_result <- load_pub_layer(dest, schema = schema)
+    cli::cli_inform("Loaded {nrow(load_result)} table(s): {sum(load_result$n_rows)} total rows.")
 
-schema <- Sys.getenv("ANALYTICS_DB_SCHEMA", "dbo")
-load_result <- load_pub_layer(dest, schema = schema)
-cli::cli_inform("Loaded {nrow(load_result)} table(s): {sum(load_result$n_rows)} total rows.")
-
-load_pipeline_health(dest, schema = schema)
+    load_pipeline_health(dest, schema = schema)
+  },
+  finally = DBI::dbDisconnect(dest)
+)

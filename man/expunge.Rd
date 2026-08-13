@@ -28,3 +28,11 @@ expires all history up to now, so the removed data cannot be recovered
 through time travel either. Exactly one of \code{survey_id}/\code{before_date} must
 be supplied.
 }
+\details{
+The matching \code{pub} rows go too. \code{pub.responses}/\code{pub.answers} hold a
+\emph{second copy} of the answer text (\code{pub.answers.answer} is the verbatim
+string), so deleting only from \code{raw} would leave the expunged data fully
+readable -- and, worse, would leave it as the only remaining copy once
+history is expired, then push it downstream on the next
+\code{\link[=load_pub_layer]{load_pub_layer()}} run.
+}

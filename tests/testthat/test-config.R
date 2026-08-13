@@ -39,3 +39,18 @@ test_that("alchemer_rpm and alchemer_full_sweep_days have documented defaults", 
   expect_equal(alchemer_rpm(), 100)
   expect_equal(alchemer_full_sweep_days(), 90)
 })
+
+test_that("an optional setting present but blank falls back to its default", {
+  # Regression test (code review): Renviron.example ships every optional
+  # setting as a `NAME=value` line, so blanking a value out (rather than
+  # deleting the line) is the natural way to "unset" one -- but Sys.getenv()'s
+  # `unset` default only applies when the variable is absent entirely. The
+  # result was a base URL of "https:///v5" and req_throttle() aborting with
+  # "capacity must be a whole number, not a numeric NA" -- neither of which
+  # names the actual problem.
+  withr::local_envvar(ALCHEMER_DOMAIN = "", ALCHEMER_RPM = "", ALCHEMER_FULL_SWEEP_DAYS = "")
+  expect_equal(alchemer_domain(), "api.alchemer.com")
+  expect_equal(alchemer_rpm(), 100)
+  expect_equal(alchemer_full_sweep_days(), 90)
+  expect_equal(alchemer_client(token = "T", secret = "S")$base_url, "https://api.alchemer.com/v5")
+})

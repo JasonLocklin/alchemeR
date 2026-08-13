@@ -92,7 +92,8 @@ run_integrity_checks <- function(con, survey_id = NULL, expected_count = NULL) {
 #' investigating a data quality report.
 #'
 #' @param db Application database directory. Defaults to [alchemer_db_path()].
-#' @return A tibble, one row per check (per survey, if `survey_id` is given).
+#' @return A tibble, one row per check. The checks run account-wide here;
+#'   `ingest()` runs the same ones scoped to the survey it just committed.
 #' @export
 db_check <- function(db = alchemer_db_path()) {
   con <- alchemer_db(db, read_only = TRUE)

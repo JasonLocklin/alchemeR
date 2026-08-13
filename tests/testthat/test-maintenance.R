@@ -138,6 +138,49 @@ test_that("expunge(survey_id =) removes the survey and all of its raw rows", {
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 0)
 })
 
+test_that("expunge() removes the pub copy of the data too, not just raw", {
+  # Regression test (code review): expunge() deleted from raw.* only, so
+  # pub.answers -- which holds the verbatim answer text -- kept a complete,
+  # readable copy of data documented as permanently removed. Worse, because
+  # expunge() then expires all history, the pub copy became the *only*
+  # remaining copy, and the next load_pub_layer() would push it downstream.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title, is_deleted) VALUES ('1', 'S1', FALSE)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.survey_questions
+    (survey_id, question_id, question_order, shortname) VALUES ('1', '2', 1, 'q_a')")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.responses
+    (survey_id, response_id, date_submitted, survey_data, is_deleted) VALUES
+    ('1', 'r1', '2020-01-01 00:00:00 EST',
+     '{\"2\": {\"answer\": \"SECRET-1\", \"shown\": true}}', FALSE),
+    ('1', 'r2', '2026-01-01 00:00:00 EST',
+     '{\"2\": {\"answer\": \"SECRET-2\", \"shown\": true}}', FALSE)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n, 2)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  # before_date: only the matching response leaves, from pub as well as raw
+  expunge(dir, before_date = as.Date("2024-01-01"))
+  con <- alchemer_db(dir, read_only = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT answer FROM alchemer.pub.answers")$answer, "SECRET-2")
+  expect_equal(DBI::dbGetQuery(con, "SELECT response_id FROM alchemer.pub.responses")$response_id, "r2")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  # survey_id: everything for the survey leaves pub, wide view included
+  expunge(dir, survey_id = "1")
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  for (tbl in c("surveys", "questions", "options", "responses", "answers")) {
+    expect_equal(DBI::dbGetQuery(con, glue::glue("SELECT COUNT(*) n FROM alchemer.pub.{tbl}"))$n, 0)
+  }
+  wide <- DBI::dbGetQuery(con, "SELECT table_name FROM information_schema.tables
+    WHERE table_schema = 'pub' AND table_name LIKE 'wide%'")$table_name
+  expect_length(wide, 0)
+})
+
 test_that("expunge() requires survey_id or before_date", {
   dir <- withr::local_tempdir()
   seed_maintenance_db(dir)

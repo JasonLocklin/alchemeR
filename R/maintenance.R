@@ -95,6 +95,13 @@ expire_history <- function(db = alchemer_db_path(), older_than) {
 #'   Interpreted as an America/Toronto calendar date (midnight local time);
 #'   `date_submitted` itself is parsed using its own per-row EST/EDT suffix,
 #'   so the comparison is DST-correct without guessing at a fixed offset.
+#' @details
+#' The matching `pub` rows go too. `pub.responses`/`pub.answers` hold a
+#' *second copy* of the answer text (`pub.answers.answer` is the verbatim
+#' string), so deleting only from `raw` would leave the expunged data fully
+#' readable -- and, worse, would leave it as the only remaining copy once
+#' history is expired, then push it downstream on the next
+#' [load_pub_layer()] run.
 #' @return Invisibly, `TRUE`.
 #' @export
 expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL) {
@@ -117,6 +124,9 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
         }
         DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.raw.surveys WHERE survey_id = {sid}"))
         DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.survey_state WHERE survey_id = {sid}"))
+        for (tbl in c("surveys", "questions", "options", "responses", "answers")) {
+          DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.{tbl} WHERE survey_id = {sid}"))
+        }
       }
       if (!is.null(before_date)) {
         # date_submitted carries an explicit EST or EDT suffix per row --
@@ -140,6 +150,19 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
            END) < {cutoff}"
         ))
       }
+      # Whatever the criterion was, pub.responses/pub.answers must not keep
+      # rows whose raw.responses row has just gone: pub.answers.answer is a
+      # verbatim copy of the answer text, so leaving it behind would defeat
+      # the whole point of expunging. Keyed off raw rather than off the
+      # criterion so both branches above are covered by one rule.
+      for (tbl in c("responses", "answers")) {
+        DBI::dbExecute(con, glue::glue(
+          "DELETE FROM {ducklake_alias}.pub.{tbl} p WHERE NOT EXISTS (
+             SELECT 1 FROM {ducklake_alias}.raw.responses r
+             WHERE r.survey_id = p.survey_id AND r.response_id = p.response_id
+           )"
+        ))
+      }
       DBI::dbExecute(con, "COMMIT")
     },
     error = function(e) {
@@ -147,6 +170,13 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
       cli::cli_abort("expunge() failed; no rows were removed.", parent = e, call = NULL)
     }
   )
+
+  # After the commit, not inside it: dropping a view is DDL, and a failure
+  # here would leave an empty view behind (harmless) rather than roll back
+  # deletes that have already succeeded.
+  if (!is.null(survey_id)) {
+    drop_existing_wide_views(con, as.character(survey_id))
+  }
 
   DBI::dbExecute(con, glue::glue("CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => now())"))
   DBI::dbExecute(con, glue::glue("CALL ducklake_cleanup_old_files('{ducklake_alias}')"))

@@ -10,7 +10,8 @@ db_check(db = alchemer_db_path())
 \item{db}{Application database directory. Defaults to \code{\link[=alchemer_db_path]{alchemer_db_path()}}.}
 }
 \value{
-A tibble, one row per check (per survey, if \code{survey_id} is given).
+A tibble, one row per check. The checks run account-wide here;
+\code{ingest()} runs the same ones scoped to the survey it just committed.
 }
 \description{
 Exposes the same checks \code{ingest()} runs after every survey commit

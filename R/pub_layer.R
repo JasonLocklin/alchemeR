@@ -292,7 +292,11 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
   for (survey_id in survey_ids) {
     rebuild_pub_survey(con, survey_id, language)
     if (wide_views) {
-      title <- titles$title[titles$survey_id == survey_id][1] %||% survey_id
+      # or_default(), not %||%: a survey with no title, or an id that isn't
+      # in raw.surveys at all, gives NA here rather than NULL, which %||%
+      # does not catch -- and slugify(NA) yields the placeholder "x", so the
+      # view came out named `wide_x_<id>` instead of falling back to the id.
+      title <- or_default(titles$title[titles$survey_id == survey_id][1], survey_id)
       rebuild_wide_view(con, survey_id, title)
     }
   }

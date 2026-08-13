@@ -1,3 +1,15 @@
+# Read an environment variable, falling back to `default` when it is either
+# unset *or* set to the empty string. The empty case matters: Renviron.example
+# ships every optional setting as a `NAME=value` line, so a user who blanks
+# one out (rather than deleting the line) would otherwise get "" rather than
+# the documented default -- which produced a "https:///v5" base URL and a
+# `capacity must be a whole number, not NA` throttle error rather than
+# anything that names the real problem.
+env_or <- function(name, default) {
+  value <- Sys.getenv(name, "")
+  if (nzchar(value)) value else default
+}
+
 #' Alchemer API credentials
 #'
 #' Reads `ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET` from the environment.
@@ -9,8 +21,8 @@
 #' @return A list with `token` and `secret`.
 #' @keywords internal
 alchemer_creds <- function(token = NULL, secret = NULL) {
-  token <- token %||% Sys.getenv("ALCHEMER_API_TOKEN", "")
-  secret <- secret %||% Sys.getenv("ALCHEMER_API_SECRET", "")
+  token <- token %||% env_or("ALCHEMER_API_TOKEN", "")
+  secret <- secret %||% env_or("ALCHEMER_API_SECRET", "")
 
   if (!nzchar(token)) {
     cli::cli_abort(c(
@@ -39,7 +51,7 @@ alchemer_creds <- function(token = NULL, secret = NULL) {
 #' @return A single string, e.g. `"api.alchemer.com"`.
 #' @keywords internal
 alchemer_domain <- function(domain = NULL) {
-  domain %||% Sys.getenv("ALCHEMER_DOMAIN", "api.alchemer.com")
+  domain %||% env_or("ALCHEMER_DOMAIN", "api.alchemer.com")
 }
 
 #' Alchemer application database directory
@@ -48,7 +60,7 @@ alchemer_domain <- function(domain = NULL) {
 #' @return A single string path.
 #' @keywords internal
 alchemer_db_path <- function(db = NULL) {
-  db <- db %||% Sys.getenv("ALCHEMER_DB", "")
+  db <- db %||% env_or("ALCHEMER_DB", "")
   if (!nzchar(db)) {
     cli::cli_abort(c(
       "No application database directory configured.",
@@ -68,7 +80,7 @@ alchemer_db_path <- function(db = NULL) {
 #' @return A single number.
 #' @keywords internal
 alchemer_rpm <- function(rpm = NULL) {
-  as.numeric(rpm %||% Sys.getenv("ALCHEMER_RPM", "100"))
+  as.numeric(rpm %||% env_or("ALCHEMER_RPM", "100"))
 }
 
 #' Maximum staleness backstop for survey refresh
@@ -81,5 +93,5 @@ alchemer_rpm <- function(rpm = NULL) {
 #' @return A single number.
 #' @keywords internal
 alchemer_full_sweep_days <- function(days = NULL) {
-  as.numeric(days %||% Sys.getenv("ALCHEMER_FULL_SWEEP_DAYS", "90"))
+  as.numeric(days %||% env_or("ALCHEMER_FULL_SWEEP_DAYS", "90"))
 }

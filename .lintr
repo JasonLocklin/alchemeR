@@ -3,5 +3,11 @@ linters: linters_with_defaults(
     object_name_linter(styles = "snake_case")
   )
 exclusions: list(
-    "tests/testthat.R"
+    "tests/testthat.R",
+    # lintr 3.3.0.1 crashes (not lints -- errors out of lint_package()) on
+    # methods::setMethod(DBI::dbWriteTable, ...): its assignment-symbol XPath
+    # feeds the generic *function object* to parse(), which fails on "DBI::".
+    # The setMethod() calls there deliberately pass the object rather than the
+    # name string, so the file is skipped instead of being rewritten.
+    "tests/testthat/test-load.R"
   )
