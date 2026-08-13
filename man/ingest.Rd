@@ -35,8 +35,10 @@ a correctness backstop, not a freshness setting (ADR-004).}
 \item{rpm}{Request-per-minute throttle ceiling, passed to \code{\link[=alchemer_client]{alchemer_client()}}
 when \code{client} is not supplied directly.}
 
-\item{dry_run}{If \code{TRUE}, make the same decisions and requests but write
-nothing to the database.}
+\item{dry_run}{If \code{TRUE}, make the same decisions and requests but write no
+data. The database directory and its empty tables are still created if
+they don't exist yet, so a dry run against a fresh \code{ALCHEMER_DB} leaves a
+valid, empty database behind.}
 
 \item{client}{An \code{alchemer_client}. Defaults to one built from the
 environment; tests pass a fixture-backed client (ADR-010).}

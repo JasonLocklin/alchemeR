@@ -26,7 +26,7 @@ title_sql <- function(column, language) {
 # - date_submitted/date_started carry an explicit, per-row EST or EDT
 #   suffix -- the exact Eastern-time abbreviation for that date -- so they
 #   parse into an unambiguous instant with no assumption of our own, and
-#   then convert to the configured zone (tz_timestamp_sql). For an Eastern
+#   then convert to the configured zone (est_edt_timestamp_sql). For an Eastern
 #   ALCHEMER_TZ the result is numerically identical to the string Alchemer
 #   sent, just parsed rigorously rather than string-munged; for any other
 #   zone it is the correct local rendering of the same instant.
@@ -285,6 +285,7 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
   }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  on.exit(release_writer_lock(db), add = TRUE)
 
   survey_ids <- if (!is.null(surveys)) {
     as.character(surveys)

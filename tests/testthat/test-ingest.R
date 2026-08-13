@@ -293,6 +293,94 @@ test_that("dry_run reports decisions without writing anything", {
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.runs")$n, 0)
 })
 
+test_that("omitting a dataset from include= leaves what was archived alone", {
+  # Regression test (code review): replace_survey_rows() deletes before it
+  # writes, so an excluded dataset was passed an empty frame and its previously
+  # archived rows were destroyed. Omitting a dataset means "don't fetch it this
+  # run", never "delete it" -- the opposite of the archival premise.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+  router <- function(req) {
+    path <- httr2::url_parse(req$url)$path
+    if (grepl("/surveycampaign$", path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = TRUE, total_count = 1, page = 1, total_pages = 1,
+        data = list(list(id = "9001", name = "Default Link"))
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+
+  httr2::local_mocked_responses(router)
+  ingest(db = dir, client = ingest_test_client(), include = "campaigns")
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.survey_campaigns")$n, 1)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  httr2::local_mocked_responses(router)
+  ingest(db = dir, client = ingest_test_client(), include = character(0), force = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.survey_campaigns")$n, 1)
+})
+
+test_that("a failed integrity check is recorded, not discarded with the rollback", {
+  # Regression test (code review): the checks were written inside the refresh
+  # transaction and only after the pass/fail branch, so meta.integrity_checks
+  # could contain nothing but passes -- inverting its meaning for monitoring,
+  # since "no failed rows" did not mean "no failed checks".
+  # The failure has to come from the API, not from a row injected beforehand: a
+  # refresh replaces everything it stores for the survey, so anything injected
+  # into raw is gone before the checks run. A list endpoint returning the same
+  # response twice -- what an overlapping page would look like -- is the real
+  # shape of this, and the assertion exists precisely because DuckLake cannot
+  # declare the uniqueness constraint that would otherwise catch it.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r1")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client())
+  expect_equal(out$status, "error")
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  # The rollback held: no half-written survey.
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 0)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  failed <- DBI::dbGetQuery(con, "SELECT check_name, message FROM alchemer.meta.integrity_checks
+    WHERE NOT passed")
+  expect_gt(nrow(failed), 0)
+  expect_true(any(grepl("duplicate", failed$message)))
+})
+
+test_that("meta.runs records how many API requests the run actually made", {
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"), mock_survey("2"))
+  state$responses <- list("1" = list(mock_response("r1")), "2" = list(mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  n_requests <- DBI::dbGetQuery(con, "SELECT n_requests FROM alchemer.meta.runs")$n_requests
+  # 1 discovery + 2 probes + 5 per refreshed survey (definition, questions,
+  # campaigns, statistics, responses) = 13. Asserted as a bound rather than an
+  # exact figure so adding a fetch doesn't fail the test for no reason, but a
+  # per-survey request explosion would.
+  expect_gt(n_requests, 0)
+  expect_lte(n_requests, 1 + 2 * (1 + 5))
+})
+
 test_that("time travel returns the pre-refresh state", {
   dir <- withr::local_tempdir()
   state <- new_state()

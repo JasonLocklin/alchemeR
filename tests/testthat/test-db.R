@@ -77,6 +77,94 @@ test_that("alchemer_db fails fast with an actionable message when the catalog is
   expect_true(any(grepl("lock", out, ignore.case = TRUE)), info = paste(out, collapse = "\n"))
 })
 
+test_that("lock_holder_pid extracts the PID DuckDB names, or NA", {
+  err <- simpleError(paste(
+    'Could not set lock on file "/tmp/x/catalog.ducklake": Conflicting lock is held',
+    "in /usr/lib/R/bin/exec/R (PID 714997) by user root."
+  ))
+  expect_equal(lock_holder_pid(err), 714997L)
+  expect_true(is.na(lock_holder_pid(simpleError("Could not set lock on file: unknown holder"))))
+})
+
+test_that("a writer.lock naming a process that isn't the lock holder is ignored", {
+  # The self-healing property: a writer that crashed leaves writer.lock behind
+  # but no longer holds the catalog. Comparing the recorded PID against the PID
+  # DuckDB reports as *actually* holding the lock is what keeps that stale file
+  # from failing every future run until someone deletes it by hand -- which
+  # checking only for the file's existence would do.
+  dir <- withr::local_tempdir()
+  writeLines("999999", file.path(dir, "writer.lock"))
+  expect_false(holder_is_writer(dir, 12345L)) # someone else holds it
+  expect_true(holder_is_writer(dir, 999999L)) # the recorded writer holds it
+  expect_false(holder_is_writer(dir, NA_integer_)) # DuckDB named nobody
+})
+
+test_that("a concurrent alchemeR writer fails fast, and is never waited out or killed", {
+  skip_on_os("windows") # file locking semantics differ
+  dir <- withr::local_tempdir()
+  holder <- local_lock_holder(dir, read_only = FALSE)
+  # Stand in for the holder having recorded itself: the subprocess deliberately
+  # doesn't load alchemeR (it wouldn't be installed during R CMD check), so the
+  # test writes the writer.lock the real code would have written.
+  writeLines(as.character(holder$pid), file.path(dir, "writer.lock"))
+
+  before <- Sys.time()
+  expect_error(alchemer_db(dir, lock_wait_s = 60), class = "alchemeR_db_locked")
+  expect_error(alchemer_db(dir, lock_wait_s = 60), "writer")
+  # Both calls returned promptly: lock_wait_s was not slept through.
+  expect_lt(as.numeric(difftime(Sys.time(), before, units = "secs")), 30)
+  expect_true(process_alive(holder$pid))
+})
+
+test_that("a reader still holding the database after the wait is killed, and the writer proceeds", {
+  skip_on_os("windows")
+  dir <- withr::local_tempdir()
+  holder <- local_lock_holder(dir, read_only = TRUE)
+  expect_true(process_alive(holder$pid))
+
+  # lock_wait_s = 0 skips the 5-minute wait; every other step is the real path.
+  con <- suppressWarnings(alchemer_db(dir, lock_wait_s = 0))
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.surveys")$n, 0)
+  expect_false(process_alive(holder$pid))
+  # ...and the writer recorded itself, so the next writer will fail fast
+  # rather than killing this one.
+  expect_true(holder_is_writer(dir, Sys.getpid()))
+})
+
+test_that("break_lock = FALSE leaves the reader alone and aborts instead", {
+  skip_on_os("windows")
+  dir <- withr::local_tempdir()
+  holder <- local_lock_holder(dir, read_only = TRUE)
+
+  expect_error(
+    alchemer_db(dir, lock_wait_s = 0, break_lock = FALSE),
+    class = "alchemeR_db_locked"
+  )
+  expect_true(process_alive(holder$pid))
+})
+
+test_that("db_check asserts uniqueness for every table with a natural key", {
+  # DuckLake declares no PRIMARY KEY/UNIQUE constraint (ADR-006), so each grain
+  # is only known to be unique because it is checked. Responses were checked
+  # from the start; surveys, questions, and options were not.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title) VALUES ('1', 'A'), ('1', 'B')")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.survey_questions (survey_id, question_id)
+    VALUES ('1', 'q1'), ('1', 'q1')")
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.survey_question_options
+    (survey_id, question_id, option_id) VALUES ('1', 'q1', 'o1'), ('1', 'q1', 'o1')")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  out <- db_check(dir)
+  failed <- out$check_name[!out$passed]
+  expect_true(all(
+    c("no_duplicate_surveys", "no_duplicate_questions", "no_duplicate_options") %in% failed
+  ))
+})
+
 test_that("db_check reports no failures on a clean database", {
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)

@@ -16,17 +16,33 @@ run_integrity_checks <- function(con, survey_id = NULL, expected_count = NULL) {
 
   checks <- list()
 
-  n_dupes <- DBI::dbGetQuery(con, glue::glue(
-    "SELECT COUNT(*) AS n FROM (
-       SELECT survey_id, response_id FROM {ducklake_alias}.raw.responses
-       {scope_sql('responses')}
-       GROUP BY survey_id, response_id HAVING COUNT(*) > 1
-     )"
-  ))$n
-  checks$no_duplicate_responses <- list(
-    passed = n_dupes == 0,
-    message = if (n_dupes == 0) "OK" else glue::glue("{n_dupes} duplicate (survey_id, response_id) pair(s)")
+  # Every table whose grain is a natural key. DuckLake declares no PRIMARY KEY
+  # or UNIQUE constraint (ADR-006), so each of these is a property of the write
+  # pattern -- delete-then-insert inside one transaction -- rather than
+  # something the engine enforces, and has to be asserted to be known.
+  unique_grains <- list(
+    no_duplicate_responses = list(table = "responses", keys = c("survey_id", "response_id")),
+    no_duplicate_surveys = list(table = "surveys", keys = "survey_id"),
+    no_duplicate_questions = list(table = "survey_questions", keys = c("survey_id", "question_id")),
+    no_duplicate_options = list(
+      table = "survey_question_options", keys = c("survey_id", "question_id", "option_id")
+    )
   )
+  for (name in names(unique_grains)) {
+    grain <- unique_grains[[name]]
+    keys <- paste(grain$keys, collapse = ", ")
+    n_dupes <- DBI::dbGetQuery(con, glue::glue(
+      "SELECT COUNT(*) AS n FROM (
+         SELECT {keys} FROM {ducklake_alias}.raw.{grain$table} t
+         {scope_sql('t')}
+         GROUP BY {keys} HAVING COUNT(*) > 1
+       )"
+    ))$n
+    checks[[name]] <- list(
+      passed = n_dupes == 0,
+      message = if (n_dupes == 0) "OK" else glue::glue("{n_dupes} duplicate ({keys}) row(s)")
+    )
+  }
 
   if (!is.null(survey_id) && !is.null(expected_count)) {
     live_count <- DBI::dbGetQuery(con, glue::glue(

@@ -43,8 +43,9 @@ library(alchemeR)
 ingest(dry_run = TRUE)
 ```
 
-This makes the same discovery and probe requests as a real run, but writes
-nothing. Once you're comfortable with the plan, try one small survey first:
+This makes the same discovery and probe requests as a real run, but writes no
+data (it will create the empty database if `ALCHEMER_DB` doesn't exist yet).
+Once you're comfortable with the plan, try one small survey first:
 
 ```{r}
 ingest(surveys = "YOUR_SMALL_SURVEY_ID")

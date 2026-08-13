@@ -76,6 +76,88 @@ test_that("load_pipeline_health writes a monitorable status row", {
   expect_true("checked_at" %in% names(loaded))
 })
 
+test_that("each load records itself in meta.loads, and db_status reports it", {
+  dir <- withr::local_tempdir()
+  seed_pub_layer(dir)
+  dest <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  on.exit(DBI::dbDisconnect(dest))
+
+  load_pub_layer(dest, dir)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  loads <- DBI::dbGetQuery(con, "SELECT * FROM alchemer.meta.loads")
+  expect_equal(nrow(loads), 1)
+  expect_equal(loads$status, "completed")
+  expect_true("responses" %in% jsonlite::fromJSON(loads$tables))
+
+  # The destination is write-only, so this is the only place the pipeline can
+  # answer "did the last load succeed?" -- and load_pipeline_health() carries
+  # it downstream.
+  status <- db_status(dir)
+  expect_equal(status$last_load_status, "completed")
+  expect_gt(status$last_load_tables, 0)
+})
+
+test_that("a table this pipeline previously loaded but no longer produces is dropped", {
+  # Regression test (code review): renaming a survey changes its wide view's
+  # name, so the old destination table was left behind forever -- still
+  # queryable, frozen at the last load, with nothing marking it stale. The
+  # worst failure shape for a warehouse: dashboards keep working and keep
+  # showing old data.
+  dir <- withr::local_tempdir()
+  seed_pub_layer(dir)
+  dest <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  on.exit(DBI::dbDisconnect(dest))
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "CREATE VIEW alchemer.pub.wide_old_title_1 AS SELECT * FROM alchemer.pub.responses")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  load_pub_layer(dest, dir)
+  expect_true("wide_old_title_1" %in% DBI::dbListTables(dest))
+
+  # The survey is retitled: pub_layer() drops the old view and makes a new one.
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "DROP VIEW alchemer.pub.wide_old_title_1")
+  DBI::dbExecute(con, "CREATE VIEW alchemer.pub.wide_new_title_1 AS SELECT * FROM alchemer.pub.responses")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  load_pub_layer(dest, dir)
+
+  expect_true("wide_new_title_1" %in% DBI::dbListTables(dest))
+  expect_false("wide_old_title_1" %in% DBI::dbListTables(dest))
+})
+
+test_that("only tables a previous load recorded are ever dropped", {
+  # The scoping that makes the cleanup safe: a table the pipeline didn't create
+  # must survive, however much its name looks like one of ours.
+  dir <- withr::local_tempdir()
+  seed_pub_layer(dir)
+  dest <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  on.exit(DBI::dbDisconnect(dest))
+
+  DBI::dbWriteTable(dest, "wide_someone_elses_report", data.frame(x = 1))
+  load_pub_layer(dest, dir)
+  load_pub_layer(dest, dir)
+  expect_true("wide_someone_elses_report" %in% DBI::dbListTables(dest))
+})
+
+test_that("a failed load is recorded as failed and raises", {
+  dir <- withr::local_tempdir()
+  seed_pub_layer(dir)
+  dest <- DBI::dbConnect(RSQLite::SQLite(), ":memory:")
+  DBI::dbDisconnect(dest) # closed underneath us: every write will fail
+
+  expect_error(load_pub_layer(dest, dir), class = "alchemeR_load_error")
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  loads <- DBI::dbGetQuery(con, "SELECT status FROM alchemer.meta.loads")
+  expect_equal(loads$status, "failed")
+  # A failed load must not be mistaken for the last good one when the *next*
+  # load decides what to clean up.
+  expect_equal(db_status(dir)$last_load_status, "failed")
+})
+
 # A DBI connection wrapper that delegates writes to a real connection but
 # throws if any read (dbSendQuery, which DBI's default dbGetQuery()/
 # dbReadTable() both delegate through) is issued against it -- a genuine

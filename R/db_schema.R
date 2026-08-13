@@ -43,13 +43,11 @@ raw_tables <- list(
     ingested_at TIMESTAMP, run_id VARCHAR",
   survey_campaigns = "
     survey_id VARCHAR, campaign_id VARCHAR, payload JSON,
-    ingested_at TIMESTAMP, run_id VARCHAR",
-  contacts = "
-    contact_id VARCHAR, list_id VARCHAR, payload JSON,
-    ingested_at TIMESTAMP, run_id VARCHAR",
-  contact_lists = "
-    list_id VARCHAR, list_name VARCHAR, payload JSON,
     ingested_at TIMESTAMP, run_id VARCHAR"
+  # No `contacts`/`contact_lists` here. They were declared before anything
+  # fetched them, so every database shipped two permanently empty tables that
+  # looked like a feature. Contacts carry heavy PII (ADR-009) and would need an
+  # explicit opt-in; declare the tables in the same change that populates them.
 )
 
 meta_tables <- list(
@@ -69,6 +67,16 @@ meta_tables <- list(
   integrity_checks = "
     run_id VARCHAR, survey_id VARCHAR, check_name VARCHAR,
     passed BOOLEAN, message VARCHAR, checked_at TIMESTAMP",
+  # One row per load_pub_layer() run. This is the only record of the Load
+  # stage anywhere the pipeline can read it: the destination service account
+  # is write-only by design, so `tables` (a JSON array of the destination
+  # table names written) is also what lets the next load drop tables it
+  # previously wrote and no longer produces -- e.g. a wide view whose survey
+  # was retitled -- without ever guessing at names it doesn't own.
+  loads = "
+    load_id VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP,
+    status VARCHAR, destination VARCHAR, n_tables INTEGER, n_rows INTEGER,
+    tables JSON, message VARCHAR",
   schema_version = "version INTEGER"
 )
 
@@ -149,11 +157,16 @@ ensure_schema <- function(con) {
   invisible(TRUE)
 }
 
-# A short random string for scoping a temp table/view name to one call, so
+# A short unique string for scoping a temp table/view name to one call, so
 # concurrent writes on the same connection (there are none today, but the
 # pattern is shared by db_schema.R and ingest.R) can't collide.
+#
+# Uses tempfile() rather than sample(letters): sample() draws from the user's
+# RNG stream, so every ingest() silently changed the random numbers a script
+# would get afterwards -- a surprising side effect from a function that only
+# needs a name nobody else is using.
 random_suffix <- function(n = 12) {
-  paste(sample(letters, n, replace = TRUE), collapse = "")
+  substr(gsub("^file", "", basename(tempfile(pattern = "file"))), 1, n)
 }
 
 # Appends `rows` to raw.<table>, reordered/validated against the table's

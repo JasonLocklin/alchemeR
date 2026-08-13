@@ -26,7 +26,9 @@ Invisibly, the health row that was loaded (a one-row tibble).
 }
 \description{
 Writes \code{\link[=db_status]{db_status()}} into the destination as a plain table, so tools
-monitoring the analytics database can see whether the pipeline is
-current and healthy without needing any access back to the local
-application database.
+monitoring the analytics database can see whether the pipeline is current
+and healthy without needing any access back to the application database.
+}
+\details{
+Call it \emph{after} \code{\link[=load_pub_layer]{load_pub_layer()}} so the load's own outcome is included.
 }

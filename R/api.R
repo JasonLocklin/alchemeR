@@ -22,10 +22,33 @@ alchemer_client <- function(token = NULL, secret = NULL, domain = NULL, rpm = NU
       token = creds$token,
       secret = creds$secret,
       base_url = paste0("https://", domain, "/v5"),
-      rpm = alchemer_rpm(rpm)
+      rpm = alchemer_rpm(rpm),
+      # An environment, not a plain counter: the client is passed by value, so
+      # a numeric field could never be incremented in a way the caller sees.
+      # This is what makes meta.runs.n_requests observable (ADR-011's request
+      # budget is only checkable if requests are actually counted).
+      counter = new.env(parent = emptyenv())
     ),
     class = "alchemer_client"
   )
+}
+
+# Tolerates a client built without a counter (a hand-rolled fixture stub, or
+# one restored from a serialised session), since counting is diagnostic and
+# must never be the thing that fails a run.
+count_requests <- function(client, n = 1L) {
+  if (!is.environment(client$counter)) {
+    return(invisible(NULL))
+  }
+  client$counter$n <- or_default(client$counter$n, 0L) + n
+  invisible(NULL)
+}
+
+requests_made <- function(client) {
+  if (!is.environment(client$counter)) {
+    return(NA_integer_)
+  }
+  as.integer(or_default(client$counter$n, 0L))
 }
 
 #' @export
@@ -68,7 +91,8 @@ is_transient_status <- function(resp) {
 # Perform a request, catching every httr2 failure (network or HTTP status)
 # and re-throwing a condition that carries only method, redacted path, and
 # status — never the underlying condition, which may embed the full URL.
-alchemer_perform <- function(req) {
+alchemer_perform <- function(req, client = NULL) {
+  if (!is.null(client)) count_requests(client)
   tryCatch(
     httr2::req_perform(req),
     httr2_error = function(e) {
@@ -125,7 +149,7 @@ unwrap_envelope <- function(body, req) {
 #' @keywords internal
 alchemer_fetch <- function(client, path, query = list()) {
   req <- alchemer_request(client, path, query)
-  resp <- alchemer_perform(req)
+  resp <- alchemer_perform(req, client)
   body <- httr2::resp_body_json(resp, simplifyVector = FALSE)
   unwrap_envelope(body, req)
 }
@@ -181,6 +205,7 @@ alchemer_fetch_all <- function(client, path, query = list(), resultsperpage = 50
     }
   )
 
+  count_requests(client, length(resps))
   items <- purrr::map(resps, function(resp) {
     body <- httr2::resp_body_json(resp, simplifyVector = FALSE)
     unwrap_envelope(body, req)

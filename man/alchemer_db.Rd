@@ -4,7 +4,12 @@
 \alias{alchemer_db}
 \title{Open (or create) the alchemeR application database}
 \usage{
-alchemer_db(db = alchemer_db_path(), read_only = FALSE)
+alchemer_db(
+  db = alchemer_db_path(),
+  read_only = FALSE,
+  lock_wait_s = lock_wait_default_s,
+  break_lock = !read_only
+)
 }
 \arguments{
 \item{db}{Application database directory. Defaults to \code{\link[=alchemer_db_path]{alchemer_db_path()}}.}
@@ -12,6 +17,16 @@ alchemer_db(db = alchemer_db_path(), read_only = FALSE)
 \item{read_only}{Open without creating directories, schema, or the
 read/write lock DuckLake normally holds while attached (ADR-001) --
 for analysts who only ever query the database.}
+
+\item{lock_wait_s}{How long to wait for a reader to release the database
+before giving up (or, if \code{break_lock}, killing it). A concurrent
+\emph{writer} is never waited out: that fails immediately.}
+
+\item{break_lock}{After \code{lock_wait_s}, kill the reader still holding the
+database and continue. Defaults to \code{TRUE} for a writer, since a
+forgotten read-only session would otherwise fail every scheduled run,
+and a reader cannot corrupt anything by being killed. Never kills
+another \code{alchemeR} writer.}
 }
 \value{
 A \code{DBI} connection with the catalog attached as \code{alchemer}.

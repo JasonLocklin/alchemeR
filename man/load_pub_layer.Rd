@@ -17,11 +17,18 @@ load_pub_layer(dest_con, db = alchemer_db_path(), tables = NULL, schema = NULL)
 \code{NULL} uses the destination's default schema.}
 }
 \value{
-Invisibly, a tibble: one row per table loaded, with row counts and timing.
+Invisibly, a tibble: one row per table loaded, with row counts and
+timing.
 }
 \description{
-Copies every \verb{pub.*} table (including generated wide views) from the
-local application database into \code{dest_con} via \code{\link[DBI:dbWriteTable]{DBI::dbWriteTable()}}
-with \code{overwrite = TRUE} -- a full replace per table, never an
-incremental update.
+Copies every \verb{pub.*} table (including generated wide views) into
+\code{dest_con} via \code{\link[DBI:dbWriteTable]{DBI::dbWriteTable()}} with \code{overwrite = TRUE} -- a full
+replace per table, never an incremental update.
+}
+\details{
+Destination tables this pipeline wrote on a previous run and no longer
+produces are dropped, so a retitled survey doesn't leave its old
+\verb{wide_<slug>_<id>} table behind as a stale, still-queryable copy. Only
+names recorded in \code{meta.loads} are ever dropped -- tables the pipeline
+didn't create are never touched.
 }

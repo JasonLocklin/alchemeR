@@ -28,6 +28,7 @@ Imports:
     rlang,
     stats,
     tibble,
+    tools,
     utils
 Suggests:
     httptest2,

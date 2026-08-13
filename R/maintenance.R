@@ -6,9 +6,15 @@
 
 #' Application database summary
 #'
+#' Covers both stages: the most recent `ingest()` run and the most recent
+#' [load_pub_layer()]. [load_pipeline_health()] copies this row into the
+#' analytics database, so a monitor watching that table can tell a stalled
+#' extract from a stalled load.
+#'
 #' @param db Application database directory. Defaults to [alchemer_db_path()].
 #' @return A one-row tibble: survey/response counts (live and flagged
-#'   deleted), snapshot count, on-disk size, and the most recent run.
+#'   deleted), snapshot count, on-disk size, and the most recent ingest run
+#'   and load.
 #' @export
 db_status <- function(db = alchemer_db_path()) {
   con <- alchemer_db(db, read_only = TRUE)
@@ -25,8 +31,13 @@ db_status <- function(db = alchemer_db_path()) {
   last_run <- DBI::dbGetQuery(con, glue::glue(
     "SELECT run_id, status, finished_at FROM {ducklake_alias}.meta.runs ORDER BY started_at DESC LIMIT 1"
   ))
+  last_load <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT load_id, status, finished_at, n_tables, n_rows FROM {ducklake_alias}.meta.loads
+     ORDER BY started_at DESC LIMIT 1"
+  ))
   n_snapshots <- DBI::dbGetQuery(con, glue::glue("SELECT COUNT(*) AS n FROM ducklake_snapshots('{ducklake_alias}')"))$n
   size_bytes <- sum(file.info(list.files(db, recursive = TRUE, full.names = TRUE))$size, na.rm = TRUE)
+  had_load <- nrow(last_load) > 0
 
   tibble::tibble(
     n_surveys = surveys$n, n_surveys_deleted = or_default(surveys$n_deleted, 0L),
@@ -34,7 +45,12 @@ db_status <- function(db = alchemer_db_path()) {
     n_snapshots = n_snapshots, size_bytes = size_bytes,
     last_run_id = if (nrow(last_run) > 0) last_run$run_id[1] else NA_character_,
     last_run_status = if (nrow(last_run) > 0) last_run$status[1] else NA_character_,
-    last_run_finished_at = if (nrow(last_run) > 0) last_run$finished_at[1] else as.POSIXct(NA)
+    last_run_finished_at = if (nrow(last_run) > 0) last_run$finished_at[1] else as.POSIXct(NA),
+    last_load_id = if (had_load) last_load$load_id[1] else NA_character_,
+    last_load_status = if (had_load) last_load$status[1] else NA_character_,
+    last_load_finished_at = if (had_load) last_load$finished_at[1] else as.POSIXct(NA),
+    last_load_tables = if (had_load) as.integer(last_load$n_tables[1]) else NA_integer_,
+    last_load_rows = if (had_load) as.integer(last_load$n_rows[1]) else NA_integer_
   )
 }
 
@@ -51,6 +67,7 @@ db_status <- function(db = alchemer_db_path()) {
 compact <- function(db = alchemer_db_path()) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  on.exit(release_writer_lock(db), add = TRUE)
   flushed <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_flush_inlined_data('{ducklake_alias}')"))
   merged <- DBI::dbGetQuery(con, glue::glue("SELECT * FROM ducklake_merge_adjacent_files('{ducklake_alias}')"))
   invisible(list(flushed = flushed, merged = merged))
@@ -71,6 +88,7 @@ compact <- function(db = alchemer_db_path()) {
 expire_history <- function(db = alchemer_db_path(), older_than) {
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  on.exit(release_writer_lock(db), add = TRUE)
   cutoff <- DBI::dbQuoteLiteral(con, as.POSIXct(older_than))
   DBI::dbExecute(con, glue::glue(
     "CALL ducklake_expire_snapshots('{ducklake_alias}', older_than => {cutoff})"
@@ -114,6 +132,7 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
   }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  on.exit(release_writer_lock(db), add = TRUE)
 
   DBI::dbExecute(con, "BEGIN")
   tryCatch(

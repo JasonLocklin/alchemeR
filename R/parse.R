@@ -21,9 +21,11 @@ chr1 <- function(x) {
   as.character(x)
 }
 
-# A nested field (object/array), or NULL, becomes JSON text -- `NULL` and
-# `list()` both serialise to the same "no value" representation a
-# downstream JSON-typed column expects: SQL NULL, not the string "null".
+# A nested field (object/array) becomes JSON text. An absent field (`NULL`)
+# becomes SQL NULL rather than the string "null"; an empty array or object
+# that Alchemer actually sent is kept as the `[]`/`{}` it sent, since "the
+# API returned an empty list" and "the API didn't return this field" are
+# different facts and `raw` records what arrived (ADR-003).
 json1 <- function(x, redact = character(0)) {
   if (is.null(x)) {
     return(NA_character_)

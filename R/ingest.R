@@ -18,7 +18,7 @@ probe_survey <- function(client, survey_id) {
     client, glue::glue("survey/{survey_id}/surveyresponse"),
     query = list(resultsperpage = 1, order_by = "-date_updated")
   )
-  resp <- alchemer_perform(req)
+  resp <- alchemer_perform(req, client)
   body <- httr2::resp_body_json(resp, simplifyVector = FALSE)
   if (isFALSE(body$result_ok)) {
     cli::cli_abort(
@@ -172,11 +172,18 @@ carry_forward_deleted <- function(con, survey_id, fetched, now = Sys.time()) {
 # Fetches everything for one survey and rebuilds its rows in every raw table
 # inside a single transaction (one DuckLake snapshot per survey per run).
 # Integrity is asserted before the transaction commits (ADR-006): a failure
-# rolls the survey back, leaving its prior state exactly as it was.
+# rolls the survey back, leaving its prior state exactly as it was. The check
+# results themselves are recorded afterwards, pass or fail (ADR-007).
+#
+# `checks` and `n_fetched` are assigned inside the tryCatch() block below and
+# read after it. That works because tryCatch() evaluates its expression in
+# *this* frame, so a plain `<-` there is a local assignment here -- no `<<-`
+# (which would reach past this frame entirely and leave both unset).
 refresh_survey <- function(con, client, survey_id, run_id, include, modified_on, probe) {
   now <- Sys.time()
   stamp <- function(df) if (nrow(df) == 0) df else dplyr::mutate(df, ingested_at = now, run_id = run_id)
   n_fetched <- NA_integer_
+  checks <- NULL
 
   # BEGIN happens before any network call, and everything -- fetching,
   # parsing, and writing -- runs inside the one tryCatch, so a failure at
@@ -191,17 +198,6 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
       varnames <- parse_varnames(alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveyquestion")))
       parsed_def <- parse_survey_definition(survey_id, def, varnames)
 
-      campaigns <- if ("campaigns" %in% include) {
-        parse_campaigns(survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveycampaign")))
-      } else {
-        tibble::tibble()
-      }
-      statistics <- if ("statistics" %in% include) {
-        parse_statistics(survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveystatistic")))
-      } else {
-        tibble::tibble()
-      }
-
       response_items <- alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveyresponse"))
       fetched_responses <- parse_responses(survey_id, response_items)
       n_fetched <- nrow(fetched_responses)
@@ -211,9 +207,22 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
       replace_survey_rows(con, "survey_pages", survey_id, stamp(parsed_def$pages))
       replace_survey_rows(con, "survey_questions", survey_id, stamp(parsed_def$questions))
       replace_survey_rows(con, "survey_question_options", survey_id, stamp(parsed_def$options))
-      replace_survey_rows(con, "survey_campaigns", survey_id, stamp(campaigns))
-      replace_survey_rows(con, "survey_statistics", survey_id, stamp(statistics))
       replace_survey_rows(con, "responses", survey_id, responses)
+
+      # A dataset left out of `include` is skipped entirely, not replaced with
+      # nothing: replace_survey_rows() deletes before it writes, so passing an
+      # empty frame would *destroy* whatever an earlier run archived. Omitting
+      # a dataset means "don't fetch it this time", never "delete it".
+      if ("campaigns" %in% include) {
+        replace_survey_rows(con, "survey_campaigns", survey_id, stamp(parse_campaigns(
+          survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveycampaign"))
+        )))
+      }
+      if ("statistics" %in% include) {
+        replace_survey_rows(con, "survey_statistics", survey_id, stamp(parse_statistics(
+          survey_id, alchemer_fetch_all(client, glue::glue("survey/{survey_id}/surveystatistic"))
+        )))
+      }
 
       checks <- run_integrity_checks(con, survey_id = survey_id, expected_count = n_fetched)
       failed <- checks[!checks$passed, , drop = FALSE]
@@ -222,7 +231,6 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
       }
 
       update_survey_state(con, survey_id, modified_on, probe, success = TRUE, now = now)
-      write_rows_generic(con, "meta.integrity_checks", dplyr::mutate(checks, run_id = run_id, checked_at = now))
       list(status = "ok", message = "OK")
     },
     error = function(e) list(status = "error", message = conditionMessage(e))
@@ -233,6 +241,15 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
   } else {
     DBI::dbExecute(con, "ROLLBACK")
     update_survey_state(con, survey_id, modified_on, probe, success = FALSE, now = now)
+  }
+
+  # Written after the transaction resolves, never inside it (ADR-007): a
+  # failing check used to abort before this line *and* would have been rolled
+  # back anyway, so meta.integrity_checks could only ever contain passes --
+  # exactly inverting its value for monitoring, since "no failed rows" did not
+  # mean "no failed checks".
+  if (!is.null(checks)) {
+    write_rows_generic(con, "meta.integrity_checks", dplyr::mutate(checks, run_id = run_id, checked_at = now))
   }
 
   c(result, list(n_fetched = n_fetched))
@@ -261,8 +278,10 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
 #'   a correctness backstop, not a freshness setting (ADR-004).
 #' @param rpm Request-per-minute throttle ceiling, passed to [alchemer_client()]
 #'   when `client` is not supplied directly.
-#' @param dry_run If `TRUE`, make the same decisions and requests but write
-#'   nothing to the database.
+#' @param dry_run If `TRUE`, make the same decisions and requests but write no
+#'   data. The database directory and its empty tables are still created if
+#'   they don't exist yet, so a dry run against a fresh `ALCHEMER_DB` leaves a
+#'   valid, empty database behind.
 #' @param client An `alchemer_client`. Defaults to one built from the
 #'   environment; tests pass a fixture-backed client (ADR-010).
 #' @return Invisibly, a tibble with one row per survey considered: decision,
@@ -276,6 +295,7 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
   run_started_at <- Sys.time()
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  on.exit(release_writer_lock(db), add = TRUE)
 
   if (!dry_run) {
     write_rows_generic(con, "meta.runs", tibble::tibble(
@@ -370,7 +390,7 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
       package_version = as.character(utils::packageVersion("alchemeR")),
       duckdb_version = as.character(utils::packageVersion("duckdb")),
       n_checked = nrow(out), n_refreshed = sum(out$refreshed %in% TRUE),
-      n_failed = sum(out$status == "error"), n_requests = NA_integer_
+      n_failed = sum(out$status == "error"), n_requests = requests_made(client)
     ))
   }
 

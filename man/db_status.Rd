@@ -11,8 +11,12 @@ db_status(db = alchemer_db_path())
 }
 \value{
 A one-row tibble: survey/response counts (live and flagged
-deleted), snapshot count, on-disk size, and the most recent run.
+deleted), snapshot count, on-disk size, and the most recent ingest run
+and load.
 }
 \description{
-Application database summary
+Covers both stages: the most recent \code{ingest()} run and the most recent
+\code{\link[=load_pub_layer]{load_pub_layer()}}. \code{\link[=load_pipeline_health]{load_pipeline_health()}} copies this row into the
+analytics database, so a monitor watching that table can tell a stalled
+extract from a stalled load.
 }
