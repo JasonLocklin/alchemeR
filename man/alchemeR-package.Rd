@@ -4,12 +4,17 @@
 \name{alchemeR-package}
 \alias{alchemeR}
 \alias{alchemeR-package}
-\title{alchemeR: Download 'Alchemer' Survey Data}
+\title{alchemeR: Archive 'Alchemer' Survey Data and Load It Into an Analytics Database}
 \description{
-Provides functions to access Alchemer data directly into R using the 'Alchemer' API. 'Alchemer' \url{https://www.alchemer.com/} is an online survey and data collection software platform. See \url{https://apihelp.alchemer.com/help} for more information about their API. This package is community-maintained and is not officially supported by 'Alchemer'.
+Copies an 'Alchemer' account into a local 'DuckLake' database -- surveys, questions, and responses kept verbatim as an archive, and republished as tidy typed tables -- and optionally on into an analytics database over a 'DBI' connection, forming a scheduled extract-load-transform pipeline. Also provides direct access to the 'Alchemer' API. 'Alchemer' \url{https://www.alchemer.com/} is an online survey and data collection software platform. See \url{https://apihelp.alchemer.com/help} for more information about their API. This package is community-maintained and is not officially supported by 'Alchemer'.
 }
 \author{
 \strong{Maintainer}: Rousell Greg \email{grousell@gmail.com}
+
+Other contributors:
+\itemize{
+  \item Jason Locklin \email{locklin.jason@gmail.com} [contributor]
+}
 
 }
 \keyword{internal}

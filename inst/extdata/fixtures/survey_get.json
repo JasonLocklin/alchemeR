@@ -1,0 +1,72 @@
+{
+  "result_ok": true,
+  "id": "8611799",
+  "team": [{"id": "40001", "name": "Research"}],
+  "type": "Standard Survey",
+  "status": "Launched",
+  "created_on": "2026-03-19 15:58:55",
+  "modified_on": "2026-03-19 16:00:31",
+  "forward_only": false,
+  "languages": ["English"],
+  "title": "Q1 Customer Feedback",
+  "internal_title": "Q1 Customer Feedback",
+  "title_ml": {"English": "Q1 Customer Feedback"},
+  "theme": "68962",
+  "blockby": "PAGE",
+  "statistics": {"Complete": 5},
+  "overall_quota": null,
+  "auto_close": null,
+  "links": {"default": "https://survey.alchemer.com/s3/8611799/q1-customer-feedback"},
+  "pages": [
+    {
+      "id": "1",
+      "title": {"English": "Page 1"},
+      "description": "",
+      "properties": {"hidden": false},
+      "questions": [
+        {
+          "id": "2",
+          "base_type": "Question",
+          "type": "TEXTBOX",
+          "title": {"English": "First Name"},
+          "shortname": "First Name",
+          "description": "",
+          "has_showhide_deps": false,
+          "comment": null,
+          "properties": {"required": false},
+          "options": [],
+          "show_rules_ids": []
+        },
+        {
+          "id": "26",
+          "base_type": "Question",
+          "type": "RADIO",
+          "title": {"English": "How satisfied are you?"},
+          "shortname": "Satisfaction",
+          "description": "",
+          "has_showhide_deps": false,
+          "comment": null,
+          "properties": {"option_sort": "custom", "required": true},
+          "options": [
+            {"id": 10001, "title": {"English": "Satisfied"}, "value": "Satisfied", "properties": {}},
+            {"id": 10002, "title": {"English": "Unsatisfied"}, "value": "Unsatisfied", "properties": {}}
+          ],
+          "show_rules_ids": []
+        },
+        {
+          "id": "82",
+          "base_type": "Action",
+          "type": "HIDDEN",
+          "title": {"English": "teams_message"},
+          "shortname": "teams_message",
+          "description": null,
+          "has_showhide_deps": false,
+          "comment": null,
+          "properties": {},
+          "options": [],
+          "show_rules_ids": []
+        }
+      ]
+    }
+  ]
+}

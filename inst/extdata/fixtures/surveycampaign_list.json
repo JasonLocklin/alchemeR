@@ -1,0 +1,17 @@
+{
+  "result_ok": true,
+  "total_count": 1,
+  "page": 1,
+  "total_pages": 1,
+  "results_per_page": 1,
+  "data": [
+    {
+      "id": "300865", "invite_id": null, "type": "SurveyCampaign", "link_type": "link",
+      "subtype": "standard", "status": "Active", "name": "Default Link",
+      "uri": "www.alchemer.com/s3/8611799/survey", "SSL": "False",
+      "token_variables": null, "limit_responses": null, "close_message": null,
+      "link_open_date": null, "link_close_date": null, "language": "Auto",
+      "date_created": "2026-03-19 15:58:55", "date_modified": "2026-03-19 15:58:55"
+    }
+  ]
+}

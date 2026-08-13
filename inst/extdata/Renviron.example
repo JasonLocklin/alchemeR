@@ -1,0 +1,55 @@
+# Copy to .Renviron (project) or ~/.Renviron (user) and fill in. alchemeR reads
+# all of these from the environment, so no credential ever has to be written
+# into project source. The API secret and the analytics database password can
+# come from keyring instead -- see vignette("scheduling").
+
+# --- Required --------------------------------------------------------------
+
+ALCHEMER_API_TOKEN=
+ALCHEMER_API_SECRET=
+
+# Directory holding the archive (catalog.sqlite and data/). Use an absolute
+# path for a scheduled job: its working directory is not guaranteed.
+ALCHEMER_DB=
+
+# Timezone for pub's timestamps. Set it to your Alchemer account's timezone:
+# pub_layer() presents every pub timestamp as wall-clock time in this zone, and
+# reads Alchemer's unsuffixed timestamps (date_updated, created_on,
+# modified_on) as already being in it. raw is never converted.
+#
+# Set this explicitly. Left unset it falls back to the machine's own timezone,
+# so a laptop and a UTC server would write different values into one database.
+ALCHEMER_TZ=America/Toronto
+
+# --- Optional (defaults shown) ---------------------------------------------
+
+# Regional API base domain -- getting this wrong is a common cause of failed
+# calls. See https://apihelp.alchemer.com/help/api-base-domains
+#   United States: api.alchemer.com (default)
+#   European Union: api.alchemer.eu
+#   Canada:         api.alchemer-ca.com
+#   Australia:      api.au.alchemer.com
+ALCHEMER_DOMAIN=api.alchemer.com
+
+# Request ceiling per minute. Alchemer's account-wide limit is 240; the default
+# leaves headroom for interactive use of the same account during a run.
+ALCHEMER_RPM=100
+
+# Days since a survey's last successful refresh before it is refreshed
+# regardless of change detection. A correctness backstop, not a freshness
+# setting -- lower it for accounts with edit-heavy closed surveys.
+ALCHEMER_FULL_SWEEP_DAYS=90
+
+# --- Analytics database (only for the Load stage) --------------------------
+# Matches the odbc + SQL Server example in inst/scripts/etl_pipeline.R;
+# load_pub_layer() is plain DBI and works with any backend. This service
+# account needs only CREATE TABLE / DROP TABLE / INSERT on the schema below --
+# never SELECT.
+
+ANALYTICS_DB_DRIVER=ODBC Driver 18 for SQL Server
+ANALYTICS_DB_SERVER=
+ANALYTICS_DB_DATABASE=
+ANALYTICS_DB_SCHEMA=dbo
+ANALYTICS_DB_UID=
+# Prefer keyring over a plaintext password here.
+ANALYTICS_DB_PWD=

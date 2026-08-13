@@ -1,0 +1,37 @@
+{
+  "result_ok": true,
+  "total_count": 2,
+  "page": 1,
+  "total_pages": 1,
+  "results_per_page": 2,
+  "data": [
+    {
+      "id": "8611799",
+      "team": "40001",
+      "type": "Standard Survey",
+      "status": "Launched",
+      "created_on": "2026-03-19 15:58:55",
+      "modified_on": "2026-03-19 16:00:31",
+      "title": "Q1 Customer Feedback",
+      "statistics": {"Complete": 5},
+      "links": {
+        "edit": "https://app.alchemer.com/projects/editor?id=8611799",
+        "publish": "https://app.alchemer.com/distribute/share?id=8611799",
+        "default": "https://survey.alchemer.com/s3/8611799/q1-customer-feedback"
+      }
+    },
+    {
+      "id": "8611800",
+      "team": "40001",
+      "type": "QuestionLibrary",
+      "status": "Draft",
+      "created_on": "2026-01-05 09:12:00",
+      "modified_on": "2026-01-05 09:12:00",
+      "title": "Reusable Question Bank",
+      "statistics": null,
+      "links": {
+        "edit": "https://app.alchemer.com/projects/editor?id=8611800"
+      }
+    }
+  ]
+}

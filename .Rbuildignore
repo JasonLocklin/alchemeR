@@ -1,0 +1,17 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^README\.Rmd$
+^LICENSE\.md$
+^\.github$
+^\.git$
+^\.claude$
+(?i)^claude
+^plan.*$
+^docs$
+^vignettes/articles$
+^_pkgdown\.yml$
+^pkgdown$
+^\.lintr$
+^cran-comments\.md$
+^doc$
+^Meta$

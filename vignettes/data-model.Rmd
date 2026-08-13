@@ -1,0 +1,219 @@
+---
+title: "The data model"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The data model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## The application database
+
+`ALCHEMER_DB` points at a directory holding two things:
+
+```
+$ALCHEMER_DB/
+  catalog.sqlite       # the catalog: table structure, snapshots, row locations
+  data/                # Parquet data files, written and compacted by DuckDB
+```
+
+It's a [DuckLake](https://ducklake.select/) database: Parquet for the data, a
+small SQL database tracking table structure, snapshots, and where every row
+lives. The catalog is SQLite rather than a DuckDB file because that is what
+allows more than one process to use it — analysts can query the database while
+the pipeline writes to it, with no lock to wait for. `alchemer_db()` attaches
+it under the alias `alchemer`, with three schemas:
+
+| Schema | What it's for | Written by |
+|---|---|---|
+| `raw` | The archive. Verbatim, untyped, never edited. | `ingest()` |
+| `pub` | Tidy typed tables for analysis. Rebuildable. | `pub_layer()` |
+| `meta` | Operational records: runs, decisions, loads, assertions. | both |
+
+In ETL terms `ingest()` is Extract + Load and `pub_layer()` is Transform — an
+**ELT** pipeline, because landing the data untouched first is what stops a
+surprise from Alchemer breaking a run. In medallion terms, `raw` is bronze and
+`pub` is silver.
+
+## `raw`: archival, verbatim, untyped
+
+Every column in `raw` is `VARCHAR` or `JSON`. No coercion, renaming, or
+language selection happens at ingest. Alchemer's own typing is inconsistent
+enough — `is_test_data` as the string `"1"`/`"0"`, titles as
+`{"English": "..."}` maps, a statistics key literally named `"total responses"`
+— that doing any of it at ingest would let a new question type fail the whole
+run, or silently mangle data. Every table also carries a `payload` column
+holding the source object close to verbatim, so nothing this package doesn't
+model explicitly is ever lost.
+
+| Table | Grain |
+|---|---|
+| `raw.surveys` | one row per survey |
+| `raw.survey_definitions` | one per survey — the whole definition tree, verbatim |
+| `raw.survey_pages`, `raw.survey_questions`, `raw.survey_question_options` | flattened from that tree |
+| `raw.responses` | one row per response; answers verbatim in `survey_data` |
+| `raw.survey_statistics`, `raw.survey_campaigns` | one row per question / campaign |
+
+### What's never stored
+
+- **File-upload attachment bytes.** The answer value and Alchemer filename are
+  kept; the bytes are not downloaded and the expiring download URL is not
+  chased. Fetch them yourself if you need them preserved.
+- **Respondent IP address, latitude/longitude, city, region, postal code, DMA,
+  and user agent** — redacted at ingest, including inside `payload`.
+- **Contacts.** Not fetched at all: heavy PII (names, emails, phone numbers)
+  that most uses of this package don't need.
+
+## History: snapshots, not a hand-rolled archive
+
+There's no separate versioned layer — DuckLake versions every write. Query the
+database as it stood at a past time or version:
+
+```{r}
+con <- alchemer_db(read_only = TRUE)
+
+DBI::dbGetQuery(con, "
+  SELECT * FROM alchemer.raw.responses AT (TIMESTAMP => '2026-01-01 00:00:00')")
+DBI::dbGetQuery(con, "SELECT * FROM ducklake_snapshots('alchemer')") # every commit
+```
+
+**History depth and retention are the same knob.** `expire_history(db,
+older_than)` trims how far back time travel reaches and reclaims the files;
+querying an expired version then fails cleanly rather than returning wrong
+data. `compact()` merges the small files each refresh leaves behind without
+touching history. Schedule both — see `vignette("scheduling")`.
+
+`expunge()` goes further: it removes rows and their history for data that must
+actually leave the database rather than just become hard to find. That takes
+more than a `DELETE`, because DuckLake keeps deleted rows in their Parquet file
+behind a delete marker, inlines small writes into the catalog, and stores
+verbatim per-column minimum and maximum values as statistics. `?expunge`
+documents all four steps; the short version is that `expunge()` handles them
+and a hand-written `DELETE` does not.
+
+## Deletions are flagged, never dropped
+
+Alchemer's list endpoints silently omit deleted responses — there is no
+tombstone to detect a deletion from. So every refresh downloads **all** of a
+survey's responses and compares that set to what's stored: anything previously
+stored and now missing is flagged `is_deleted = TRUE` with a
+`deleted_detected_at`, never removed. The same applies to a survey that
+disappears from account discovery. A row that reappears upstream is un-flagged
+automatically. Filter deleted rows in or out as your analysis needs.
+
+### Only what changed is written
+
+Comparing the fetched set against the stored one is also what keeps the archive
+small. DuckLake never rewrites a Parquet file in place, so replacing a survey's
+rows wholesale on each refresh would write a fresh copy of every row every
+time — for a 5,000-response survey polled every 15 minutes, about 200 MB a day,
+all of it retained until snapshots expire. Instead each refresh writes only rows
+that actually differ, so an unchanged survey costs nothing but the requests.
+
+One consequence worth knowing: `ingested_at` on a `raw` row means *when this
+version of the row was first stored*, not when it was last seen. An untouched
+response keeps its original value indefinitely. `meta.runs` and
+`meta.run_events` are where "when did we last look" lives.
+
+## Why full refresh, not incremental
+
+`ingest()` always downloads **every** response for a survey it refreshes, never
+a filtered subset. An incremental delta keyed on `date_updated` was considered
+and rejected: that field carries no timezone suffix, newly submitted data can
+take up to five minutes to appear, identical requests are cached for 60
+seconds, and deleted responses are omitted regardless. Any one of those can
+make a delta miss a row permanently, with nothing downstream able to notice.
+
+Under full refresh, every one of those degrades to "this survey refreshes later
+than ideal", and self-heals on the next run. `date_updated`, the survey list's
+`modified_on`, and a response count are still used — but only as hints for
+**when** a survey is worth refreshing, never to decide **which rows** to keep. A
+wrong hint costs freshness, bounded by `full_sweep_days`; it can't cost
+correctness.
+
+## `pub`: typed, for ordinary analysis
+
+`pub_layer()` builds typed, language-resolved tables from `raw` alone. It's
+rebuildable, incremental by survey, and safe to re-run.
+
+| Table | Grain | Notes |
+|---|---|---|
+| `pub.surveys`, `pub.questions`, `pub.options` | one row per entity | typed, language-resolved titles |
+| `pub.responses` | one row per response | typed timestamps and booleans; test and deleted rows flagged, not dropped |
+| `pub.answers` | one row per response × question | question and option labels, and reporting values, denormalised in |
+| `pub.wide_<slug>_<survey_id>` | one row per respondent | a generated view, one per survey |
+
+The wide view's name comes from the survey title (lowercased, ASCII, length
+capped) plus the survey id, e.g. `pub.wide_q1_customer_feedback_8611799`. The id
+keeps it unique and gives a stable join back to `pub.surveys` across a rename;
+each `pub_layer()` run drops the survey's old view before creating the current
+one. Two questions sharing a `shortname` get the question id suffixed onto the
+second one's column name.
+
+`survey_wide(con, survey_id)` computes the same shape on demand from `raw`, for
+a survey that hasn't been through `pub_layer()` yet.
+
+### Timestamps: verbatim in `raw`, local time in `pub`
+
+`raw` keeps every timestamp exactly as Alchemer sent it — string, suffix and
+all. Nothing is parsed or reinterpreted, so the archive never depends on a
+judgement of ours being right.
+
+`pub` presents them all as wall-clock time in one timezone, `ALCHEMER_TZ` (or
+`pub_layer(tz = )`). Set it to your Alchemer account's timezone, and set it
+explicitly for scheduled runs — unset, it falls back to the machine's own
+timezone, which would make `pub`'s values depend on which machine last ran.
+
+Alchemer sends two shapes:
+
+- **`date_submitted`/`date_started`** carry a per-row `EST`/`EDT` suffix, so
+  they're parsed into an exact instant using that suffix and rendered in
+  `ALCHEMER_TZ`.
+- **`date_updated`, `created_on`, `modified_on`** carry no suffix and are
+  already in the account's own local time, so they're cast as-is. Alchemer's
+  documented example makes this plain — one response:
+
+  ```
+  date_started   2025-12-09 17:15:30 EST
+  date_submitted 2025-12-09 17:15:37 EST
+  date_updated   2025-12-09 17:15:43        <- no suffix, same clock
+  ```
+
+  Updated 6 seconds after submission. Reading `date_updated` as UTC instead
+  would place it 5 hours *before* the response started.
+
+This assumes your account and your analysts share a timezone. If they ever
+don't, `raw.responses.date_updated` is still there, verbatim, to convert
+however you need.
+
+## `meta`: what the pipeline did
+
+| Table | One row per |
+|---|---|
+| `meta.runs` | `ingest()` run — status, counts, requests made |
+| `meta.run_events` | per-survey decision and refresh, with the reason |
+| `meta.survey_state` | survey — change-detection state and failure count |
+| `meta.integrity_checks` | assertion result, passes and failures both |
+| `meta.loads` | `load_pub_layer()` run, and the tables it wrote |
+
+`db_status()` summarises the latest of these in one row;
+`load_pipeline_health()` copies that row into the analytics database for
+monitoring. See `vignette("scheduling")`.
+
+## Regional API domains
+
+Set `ALCHEMER_DOMAIN` to match your account's region. Calling the wrong one is,
+per Alchemer's documentation, one of the most common causes of failed API calls,
+and it fails confusingly — login errors, empty responses, timeouts — rather than
+saying so.
+
+| Region | Domain |
+|---|---|
+| United States | `api.alchemer.com` (default) |
+| European Union | `api.alchemer.eu` |
+| Canada | `api.alchemer-ca.com` |
+| Australia | `api.au.alchemer.com` |

@@ -1,0 +1,45 @@
+url: https://grousell.github.io/alchemeR/
+
+template:
+  bootstrap: 5
+
+reference:
+- title: The pipeline
+  desc: >
+    One function per stage: Alchemer to the local archive, the archive to tidy
+    tables, and those tables on to an analytics database.
+  contents:
+  - ingest
+  - pub_layer
+  - load_pub_layer
+  - load_pipeline_health
+
+- title: Reading the data
+  contents:
+  - alchemer_db
+  - alchemer_tbl
+  - survey_wide
+
+- title: Maintenance
+  contents:
+  - db_status
+  - db_check
+  - compact
+  - expire_history
+  - expunge
+
+- title: Direct API access
+  contents:
+  - alchemer_surveys
+  - alchemer_survey
+  - alchemer_questions
+  - alchemer_responses
+  - alchemer_campaigns
+  - alchemer_statistics
+  - alchemer_client
+
+- title: Deprecated
+  contents:
+  - all_surveys
+  - fetch_survey
+  - fetch_data_dictionary

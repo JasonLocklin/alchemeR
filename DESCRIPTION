@@ -1,22 +1,48 @@
 Package: alchemeR
-Title: Download 'Alchemer' Survey Data
-Version: 0.0.0.9000
-Authors@R: 
-    person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre"))
-Description: Provides functions to access Alchemer data directly into R using 
-  the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey 
-  and data collection software platform. See <https://apihelp.alchemer.com/help> 
-  for more information about their API. This package is community-maintained and
-  is not officially supported by 'Alchemer'.
+Title: Archive 'Alchemer' Survey Data and Load It Into an Analytics
+    Database
+Version: 1.0.0
+Authors@R: c(
+    person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre")),
+    person("Jason", "Locklin", , "locklin.jason@gmail.com", role = "ctb"))
+Description: Copies an 'Alchemer' account into a local 'DuckLake' database --
+  surveys, questions, and responses kept verbatim as an archive, and republished
+  as tidy typed tables -- and optionally on into an analytics database over a
+  'DBI' connection, forming a scheduled extract-load-transform pipeline. Also
+  provides direct access to the 'Alchemer' API. 'Alchemer'
+  <https://www.alchemer.com/> is an online survey and data collection software
+  platform. See <https://apihelp.alchemer.com/help> for more information about
+  their API. This package is community-maintained and is not officially
+  supported by 'Alchemer'.
+Depends:
+    R (>= 4.1.0)
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.2.3
-Imports: 
+RoxygenNote: 7.3.3
+Imports:
+    cli,
+    DBI,
+    dbplyr,
     dplyr,
+    duckdb (>= 1.5.2),
     glue,
-    httr2,
+    httr2 (>= 1.0.0),
     jsonlite,
-    stringr,
-    tidyr,
+    lifecycle,
+    purrr,
+    rlang,
+    stats,
+    tibble,
     utils
+Suggests:
+    httptest2,
+    keyring,
+    knitr,
+    rmarkdown,
+    RSQLite,
+    testthat (>= 3.0.0),
+    tools,
+    withr
+Config/testthat/edition: 3
+VignetteBuilder: knitr

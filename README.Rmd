@@ -20,55 +20,94 @@ knitr::opts_chunk$set(
 [![R-CMD-check](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-The goal of alchemeR is to provide tools to access Alchemer survey data from their API and pull into an R environment. More informtion on the Alchemer API and set up can be found here: <https://apihelp.alchemer.com/help>
+alchemeR copies your whole [Alchemer](https://www.alchemer.com/) account into a
+local database and, optionally, on into your analytics database. Two things come
+out of that:
+
+- **An archive.** Every survey, question, and response is kept locally, in full,
+  so analysis stops depending on continued Alchemer access — and so you still
+  have the data if a survey (or the account) goes away.
+- **A pipeline.** A scheduled job that keeps both the archive and your analytics
+  database current, with no per-survey code to maintain.
+
+Three functions, one per stage:
+
+| Function | Moves | What it does |
+|---|---|---|
+| `ingest()` | Alchemer → local `raw` | Downloads everything, verbatim. Later runs refresh only surveys that changed. |
+| `pub_layer()` | local `raw` → local `pub` | Builds tidy, typed tables, plus a one-row-per-respondent view per survey. |
+| `load_pub_layer()` | local `pub` → analytics DB | Copies `pub` into SQL Server, Postgres, or any other DBI backend. |
+
+In ETL terms it is an **ELT** pipeline: data lands untouched first and is
+transformed afterwards, which is what keeps a new question type from ever
+breaking a run. If you'd rather think in medallion layers, `raw` is bronze and
+`pub` is silver.
+
+The package also exposes direct-API functions for one-off use, and keeps the
+three functions from earlier releases as deprecated shims.
 
 ## Installation
-
-You can install the development version of alchemeR from [GitHub](https://github.com/) with:
 
 ``` r
 # install.packages("devtools")
 devtools::install_github("grousell/alchemeR")
 ```
 
-## Example
+## Configuration
 
-### List of all surveys:
+Everything is read from environment variables, never from arguments in your
+script. Copy `system.file("extdata", "Renviron.example", package = "alchemeR")`
+to `.Renviron` and fill it in:
 
-```{r all_surveys, eval=FALSE}
+```
+ALCHEMER_API_TOKEN=...
+ALCHEMER_API_SECRET=...
+ALCHEMER_DB=/srv/alchemer-db     # where the archive lives
+ALCHEMER_TZ=America/Toronto      # timezone for pub's timestamps
+```
+
+## Archive and analyse
+
+```{r ingest, eval=FALSE}
 library(alchemeR)
 
-all_surveys(
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-  )
+ingest()      # first run downloads everything; later runs refresh what changed
+pub_layer()   # tidy typed tables + a wide view per survey
 ```
 
-### Download survey data:
-This function downloads a .csv into the working directory. The larger the data set, the longer the API call can take. This prevents the needs to constantly make an API call when conducting analyses.
+```{r query, eval=FALSE}
+con <- alchemer_db(read_only = TRUE)
 
-The `survey_name` argument can include folders. For example, `"data/survey_name"` will save the .csv in the data subfolder.  
+# one row per response x question, ready for dplyr
+alchemer_tbl(con, "pub.answers") |> dplyr::collect()
 
-```{r fetch_survey, eval=FALSE}
-library(alchemeR)
+# one row per respondent
+survey_wide(con, "8611799")
 
-fetch_survey(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret"),
-  "SURVEY_NAME"
-  )
-
-df <- read.csv("survey_data.csv")
+DBI::dbDisconnect(con, shutdown = TRUE)
 ```
 
-### Fetch survey data dictionary:
+## Load into an analytics database
 
-```{r fetch_survey_dd, eval=FALSE}
+```{r load, eval=FALSE}
+dest <- DBI::dbConnect(odbc::odbc(), Driver = "ODBC Driver 18 for SQL Server", ...)
 
-survey_data_dictionary <- fetch_data_dictionary(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-)
+load_pub_layer(dest, schema = "dbo")   # full overwrite, one table per pub table
+load_pipeline_health(dest, schema = "dbo") # a row your monitoring can watch
 ```
+
+`system.file("scripts", "etl_pipeline.R", package = "alchemeR")` is the whole
+thing as a runnable script, ready for cron or Task Scheduler.
+
+## Direct API access
+
+```{r direct-api, eval=FALSE}
+alchemer_surveys()
+alchemer_responses("8611799")
+```
+
+## Learn more
+
+`vignette("getting-started")` to set up · `vignette("data-model")` for the
+schema, history, and what is deliberately not stored · `vignette("scheduling")`
+for running it unattended.

@@ -1,0 +1,147 @@
+---
+title: "Running the pipeline unattended"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Running the pipeline unattended}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+A cold `ingest()` downloads everything; every run after that refreshes only
+surveys that actually changed (`vignette("data-model")` has the rule). So
+running it often costs little in requests, bandwidth, or storage.
+
+Two ready-made scripts, both reading all configuration from the environment so
+there is nothing account-specific to edit:
+
+- `system.file("scripts", "ingest_job.R", package = "alchemeR")` — archive only:
+  `ingest()`, `pub_layer()`, then a health check.
+- `system.file("scripts", "etl_pipeline.R", package = "alchemeR")` — the same,
+  plus the Load stage into an analytics database.
+
+## Credentials for a non-interactive job
+
+A scheduled job can't type a password, so put credentials in the environment it
+runs under:
+
+- **`.Renviron`** — a file in the script's working directory or `~/.Renviron`.
+  `Rscript` reads it exactly as an interactive session does.
+- **`keyring`** — to keep secrets off disk, read them in at the top of the job:
+
+  ```r
+  Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "secret"))
+  Sys.setenv(ANALYTICS_DB_PWD = keyring::key_get("analytics_db", "password"))
+  ```
+
+Make `ALCHEMER_DB` an **absolute** path: a scheduled job's working directory is
+not guaranteed. Set `ALCHEMER_TZ` explicitly too, so `pub`'s timestamps don't
+depend on the timezone of whichever machine happens to run the job.
+
+## cron (Linux/macOS)
+
+```
+# Every 15 minutes
+*/15 * * * * Rscript /path/to/etl_pipeline.R >> /path/to/etl.log 2>&1
+```
+
+cron runs with a minimal environment, not your shell's — so the variables must
+come from `.Renviron` or the crontab itself.
+
+## Task Scheduler (Windows)
+
+A Basic Task running `Rscript.exe path\to\etl_pipeline.R`, with "Start in" set
+to the script's directory (so a `.Renviron` there is found), or with absolute
+paths in the environment regardless.
+
+## Concurrency
+
+Analysts can query the database while the pipeline writes to it. There is no
+lock to wait for and nothing to coordinate: the DuckLake catalog is SQLite,
+which supports multiple local clients, so readers and writers attach freely.
+
+If two `ingest()` runs do overlap — an unusually slow run and the next cron
+tick — DuckLake arbitrates: it retries commits that don't logically conflict
+and aborts the ones that do. Because each survey is refreshed in its own
+transaction, the worst case is that one survey fails this run and refreshes on
+the next, which is how every other transient failure already behaves. Still
+worth avoiding: give the schedule enough headroom that runs don't overlap
+under normal conditions, and treat an overlap as a signal that something
+upstream took longer than expected.
+
+## Loading into an analytics database
+
+`load_pub_layer()` copies every `pub` table into the destination;
+`load_pipeline_health()` writes a one-row status table beside them, so tools
+watching the analytics database can see whether the pipeline is current without
+any access back to `ALCHEMER_DB`. Both take a plain `DBI` connection —
+`etl_pipeline.R` shows [odbc](https://solutions.posit.co/connections/db/r-packages/odbc/)
+against SQL Server, but any backend works the same way.
+
+Every load is a **full overwrite** (`DBI::dbWriteTable(overwrite = TRUE)`),
+mirroring `ingest()`'s own full-refresh design. Three consequences worth
+knowing:
+
+- **It tolerates schema change on either side.** A new question, a widened
+  column: each table is dropped and rebuilt from whatever `pub_layer()`
+  currently produces, never merged into a fixed destination shape.
+- **The destination service account needs only CREATE / DROP / INSERT — never
+  SELECT.** Nothing reads the destination back to decide what to do. All
+  pipeline state lives in `ALCHEMER_DB`, in `meta.loads`, which is also how a
+  table this pipeline wrote and no longer produces (a retitled survey's wide
+  view, say) gets dropped downstream instead of lingering as a stale copy.
+- **A reader can catch a table mid-overwrite** and see it briefly empty or
+  missing. Swapping a staging table in atomically would close that window, but
+  rename syntax differs too much between SQL dialects to do generically. Run
+  loads in a quiet period, or have consumers check the health table's
+  `checked_at` first.
+
+Configure the destination with `ANALYTICS_DB_*` variables — see
+`Renviron.example`.
+
+## Maintenance
+
+Two jobs, neither of which `ingest()` does for you:
+
+```
+# Weekly: merge the small files each refresh leaves behind
+0 3 * * 0 Rscript -e 'alchemeR::compact()' >> /path/to/maintenance.log 2>&1
+
+# Monthly: trim time travel to your retention window, reclaiming the files
+0 4 1 * * Rscript -e 'alchemeR::expire_history(older_than = Sys.Date() - 365)' >> /path/to/maintenance.log 2>&1
+```
+
+`compact()` matters because each refresh writes a small Parquet file per survey
+that changed, and DuckLake's guidance is that files should be at least a few
+megabytes. It doesn't touch snapshots, so it is safe to run as often as you
+like. `expire_history()` is the one that shortens how far back you can time
+travel — pick its cutoff to match your retention policy, since that is exactly
+what it enforces.
+
+`expunge()` is the third, but it is not a scheduled job: it permanently removes
+specific data and its history, for a retention obligation or a deletion
+request. See `?expunge` for what it takes to make values genuinely
+unrecoverable.
+
+## Monitoring
+
+`db_status()` is the one-row summary of both stages: counts, size, and the
+outcome and timestamp of the last `ingest()` **and** the last load. That is what
+`load_pipeline_health()` copies downstream, so an alert on "last load older
+than X" or "status is not completed" needs nothing but the analytics database.
+
+For detail, `meta.runs`, `meta.run_events`, `meta.loads`, and
+`meta.integrity_checks` in the application database record every run,
+per-survey decision, load, and assertion result — failures included.
+
+## Offline / air-gapped installs
+
+The `ducklake`, `json`, and `icu` DuckDB extensions download on first use, which
+needs one-time network access. For an air-gapped target, run `alchemer_db()`
+once on a connected machine to populate duckdb's extension cache (`~/.duckdb`
+by default — see `?duckdb::duckdb`, argument `shared_home`), then copy that
+directory to the target, same path and user. After that, `ingest()` needs no
+outbound access beyond the Alchemer API itself.
