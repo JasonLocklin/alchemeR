@@ -75,9 +75,11 @@ There's no separate versioned layer — DuckLake versions every write. Query the
 database as it stood at a past time or version:
 
 ```{r}
-# con from vignette("getting-started")
+# con from vignette("getting-started"), which runs USE alchemer -- so raw.*
+# and pub.* need no catalog prefix here, though ducklake_snapshots() still
+# takes the catalog name as a plain string argument, not a table reference
 DBI::dbGetQuery(con, "
-  SELECT * FROM alchemer.raw.responses AT (TIMESTAMP => '2026-01-01 00:00:00')")
+  SELECT * FROM raw.responses AT (TIMESTAMP => '2026-01-01 00:00:00')")
 DBI::dbGetQuery(con, "SELECT * FROM ducklake_snapshots('alchemer')") # every commit
 ```
 

@@ -29,7 +29,7 @@ test_that("reopening an existing database is idempotent", {
   DBI::dbDisconnect(con1, shutdown = TRUE)
 
   con2 <- alchemer_db(dir)
-  out <- dplyr::collect(alchemer_tbl(con2, "raw.surveys"))
+  out <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.raw.surveys")
   DBI::dbDisconnect(con2, shutdown = TRUE)
   expect_equal(nrow(out), 1)
   expect_equal(out$title, "Test")
@@ -187,15 +187,6 @@ test_that("run_integrity_checks flags a mismatched expected_count", {
   expect_false(out$passed[out$check_name == "response_count_matches_fetch"])
 })
 
-test_that("alchemer_tbl returns a dbplyr handle onto a raw table", {
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title) VALUES ('1', 'Test')")
-  out <- dplyr::collect(alchemer_tbl(con, "raw.surveys"))
-  DBI::dbDisconnect(con, shutdown = TRUE)
-  expect_equal(out$survey_id, "1")
-})
-
 test_that("alchemer_db(read_only = TRUE) errors when the database does not exist yet", {
   dir <- withr::local_tempdir()
   expect_error(alchemer_db(file.path(dir, "nope"), read_only = TRUE), class = "alchemeR_db_error")
@@ -208,7 +199,7 @@ test_that("alchemer_db(read_only = TRUE) can read an existing database", {
   DBI::dbDisconnect(con, shutdown = TRUE)
 
   con2 <- alchemer_db(dir, read_only = TRUE)
-  out <- dplyr::collect(alchemer_tbl(con2, "raw.surveys"))
+  out <- DBI::dbGetQuery(con2, "SELECT * FROM alchemer.raw.surveys")
   DBI::dbDisconnect(con2, shutdown = TRUE)
   expect_equal(nrow(out), 1)
 })

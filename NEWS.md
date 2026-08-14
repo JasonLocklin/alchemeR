@@ -22,11 +22,13 @@ that keeps it — and optionally your analytics database — current.
   `vignette("scheduling")`.
 * Maintenance: `db_status()`, `db_check()`, `compact()`, `expire_history()`, and
   `expunge()` (which removes data *and* its history, for retention obligations).
-* `alchemer_tbl()` / `survey_wide()` query the database directly, for dplyr
-  and dbplyr users, over a plain `DBI::dbConnect()` connection you open
-  yourself (see `vignette("getting-started")`) — there is no `alchemer_db()`
-  connect helper, so the ATTACH mechanics aren't hidden and RStudio's
-  Connections pane can still see the connection (ADR-016).
+* `survey_wide()` computes the wide shape on demand for any survey. For
+  everything else, query the database directly over a plain
+  `DBI::dbConnect()` connection you open yourself (see
+  `vignette("getting-started")`) — there is no `alchemer_db()` connect helper
+  or `alchemer_tbl()` query helper, so the ATTACH mechanics aren't hidden,
+  RStudio's Connections pane can still see the connection, and reading is
+  just SQL or stock `dbplyr::in_schema()` (ADR-016).
 
 ## Configuration
 

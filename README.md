@@ -73,9 +73,14 @@ DBI::dbExecute(con, glue::glue(
   "ATTACH 'ducklake:sqlite:{db}/catalog.sqlite' AS alchemer ",
   "(DATA_PATH '{db}/data/', READ_ONLY)"
 ))
+DBI::dbExecute(con, "USE alchemer")
 
-# one row per response x question, ready for dplyr
-alchemer_tbl(con, "pub.answers") |> dplyr::collect()
+# raw SQL
+DBI::dbGetQuery(con, "SELECT * FROM pub.answers")
+
+# the same thing with dplyr, piped
+requireNamespace("dbplyr")
+dplyr::tbl(con, dbplyr::in_schema("pub", "answers")) |> dplyr::collect()
 
 # one row per respondent
 survey_wide(con, "8611799")

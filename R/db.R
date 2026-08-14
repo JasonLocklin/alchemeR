@@ -183,18 +183,3 @@ assert_ducklake_version <- function(con, catalog_path) {
   }
   invisible(TRUE)
 }
-
-#' A dbplyr handle onto an application database table
-#'
-#' @param con A `DBI` connection with the catalog attached as `alchemer` --
-#'   see `vignette("getting-started")` for how to open one.
-#' @param table Schema-qualified table name, e.g. `"raw.responses"`.
-#' @return A `tbl` for use with dplyr verbs.
-#' @export
-alchemer_tbl <- function(con, table) {
-  # dplyr::tbl() on a DBI connection dispatches through dbplyr, a genuine
-  # runtime dependency of this function even though it is never called
-  # directly elsewhere in this package.
-  dbplyr::dbplyr_edition()
-  dplyr::tbl(con, I(paste0(ducklake_alias, ".", table)))
-}
