@@ -16,8 +16,7 @@ reference:
 
 - title: Reading the data
   contents:
-  - alchemer_db
-  - alchemer_tbl
+  - alchemer_db_path
   - survey_wide
 
 - title: Maintenance

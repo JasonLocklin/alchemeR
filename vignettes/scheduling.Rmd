@@ -139,9 +139,10 @@ per-survey decision, load, and assertion result — failures included.
 
 ## Offline / air-gapped installs
 
-The `ducklake`, `json`, and `icu` DuckDB extensions download on first use, which
-needs one-time network access. For an air-gapped target, run `alchemer_db()`
-once on a connected machine to populate duckdb's extension cache (`~/.duckdb`
-by default — see `?duckdb::duckdb`, argument `shared_home`), then copy that
+The `ducklake`, `sqlite`, `json`, and `icu` DuckDB extensions download on first
+use, which needs one-time network access. For an air-gapped target, run the
+`INSTALL` loop from `vignette("getting-started")`'s connect snippet once on a
+connected machine to populate duckdb's extension cache (`~/.duckdb` by
+default — see `?duckdb::duckdb`, argument `shared_home`), then copy that
 directory to the target, same path and user. After that, `ingest()` needs no
 outbound access beyond the Alchemer API itself.

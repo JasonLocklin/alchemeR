@@ -69,15 +69,58 @@ pub_layer()   # tidy typed tables + a wide view per survey
 Later `ingest()` calls only refresh surveys that actually changed, so it is
 safe to run on a schedule — see `vignette("scheduling")`.
 
-## Using the data
+## Connecting
 
-`pub` is ordinary tidy data. Use dplyr against it, or pull it into memory:
+alchemeR has no `connect()` helper — you open the connection yourself with
+plain `DBI::dbConnect()`, the same as you would for any other database:
 
 ```{r}
-con <- alchemer_db(read_only = TRUE)
+db <- alchemer_db_path()  # or wherever ALCHEMER_DB points
 
-# one row per response x question
-alchemer_tbl(con, "pub.answers") |>
+con <- DBI::dbConnect(duckdb::duckdb())
+for (ext in c("json", "sqlite", "ducklake", "icu")) {
+  DBI::dbExecute(con, paste("INSTALL", ext))
+  DBI::dbExecute(con, paste("LOAD", ext))
+}
+DBI::dbExecute(con, glue::glue(
+  "ATTACH 'ducklake:sqlite:{db}/catalog.sqlite' AS alchemer ",
+  "(DATA_PATH '{db}/data/', READ_ONLY)"
+))
+DBI::dbExecute(con, "USE alchemer")
+```
+
+Drop `READ_ONLY` if you need to write (the pipeline functions do this for
+you). Typing the real `dbConnect()`/`ATTACH` calls, instead of hiding them
+behind a package function, is deliberate: it's what lets RStudio's
+Connections pane pick up the connection and let you browse `alchemer`'s
+schemas and tables, which it can't do for a connection opened inside
+someone else's helper function.
+
+`USE alchemer` makes `alchemer` the default catalog for the rest of the
+session, so every query below can say `pub.answers` instead of
+`alchemer.pub.answers`. It doesn't collapse `raw`, `meta`, and `pub` into
+one search path — `raw` and `pub` deliberately share table names
+(`raw.responses` vs `pub.responses`), so the schema always has to be
+written out; only the catalog prefix goes away.
+
+You can query the database while a scheduled `ingest()` is running — a
+`READ_ONLY` attach never blocks a writer, or is blocked by one.
+
+## Using the data
+
+`pub` is ordinary tidy data. Query it with plain SQL, or with dplyr —
+there's no package-specific `tbl()` wrapper, just stock `dbplyr` (install it
+alongside alchemeR if you want the pipe; `dplyr::tbl()` only dispatches on a
+`DBI` connection once dbplyr's namespace is loaded):
+
+```{r}
+# raw SQL
+DBI::dbGetQuery(con, "
+  SELECT * FROM pub.answers WHERE NOT is_deleted AND answer IS NOT NULL")
+
+# the same thing with dplyr, piped
+requireNamespace("dbplyr")
+dplyr::tbl(con, dbplyr::in_schema("pub", "answers")) |>
   dplyr::filter(!is_deleted, !is.na(answer)) |>
   dplyr::collect()
 
@@ -86,9 +129,6 @@ survey_wide(con, "YOUR_SURVEY_ID")
 
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
-
-Use `read_only = TRUE` whenever you are only reading. You can query the
-database while a scheduled `ingest()` is running — neither blocks the other.
 
 `survey_wide()` computes the wide shape on demand, straight from `raw` — handy
 for a survey you haven't run `pub_layer()` on yet.

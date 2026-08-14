@@ -56,9 +56,14 @@ alchemer_domain <- function(domain = NULL) {
 
 #' Alchemer application database directory
 #'
+#' Every pipeline function defaults its `db` argument to this. Also handy for
+#' opening your own connection (see `vignette("getting-started")`), since it
+#' gives the same actionable error as the pipeline functions when
+#' `ALCHEMER_DB` isn't set, rather than a raw "object not found".
+#'
 #' @param db Directory override. Defaults to `Sys.getenv("ALCHEMER_DB")`.
 #' @return A single string path.
-#' @keywords internal
+#' @export
 alchemer_db_path <- function(db = NULL) {
   db <- db %||% env_or("ALCHEMER_DB", "")
   if (!nzchar(db)) {

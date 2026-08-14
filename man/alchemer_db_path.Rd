@@ -13,6 +13,8 @@ alchemer_db_path(db = NULL)
 A single string path.
 }
 \description{
-Alchemer application database directory
+Every pipeline function defaults its \code{db} argument to this. Also handy for
+opening your own connection (see \code{vignette("getting-started")}), since it
+gives the same actionable error as the pipeline functions when
+\code{ALCHEMER_DB} isn't set, rather than a raw "object not found".
 }
-\keyword{internal}
