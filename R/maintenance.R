@@ -272,6 +272,14 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
            )"
         ))
       }
+      # pub_layer() skips a survey whose meta.pub_state row still matches what
+      # `raw` holds (ADR-017), and this function has just edited both layers
+      # behind its back. Clearing the whole table -- not just the expunged
+      # survey's row -- is deliberate: expunge() is a rare, explicit operation,
+      # a full rebuild of `pub` from the post-expunge `raw` is exactly what
+      # should follow it, and one unconditional statement needs no reasoning
+      # about which surveys the before_date branch happened to touch.
+      DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.pub_state"))
       DBI::dbExecute(con, "COMMIT")
     },
     error = function(e) {

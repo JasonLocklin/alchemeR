@@ -28,8 +28,11 @@ cli::cli_inform(paste0(
 ))
 
 # --- Transform -------------------------------------------------------------
+# Only surveys whose `raw` rows actually moved are rebuilt, so this is cheap on
+# a tick where little or nothing changed upstream.
 
-pub_layer()
+rebuilt <- pub_layer()
+cli::cli_inform("pub_layer(): {length(rebuilt)} survey(s) rebuilt, the rest unchanged.")
 
 checks <- db_check()
 if (!all(checks$passed)) {

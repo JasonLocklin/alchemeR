@@ -142,6 +142,14 @@ correctness.
 `pub_layer()` builds typed, language-resolved tables from `raw` alone. It's
 rebuildable, incremental by survey, and safe to re-run.
 
+A survey is rebuilt only when something it is built from or with has changed:
+its `raw` rows, or the `language`/`tz`/`wide_views` setting, or the version of
+alchemeR doing the building. A run where nothing changed upstream does no
+per-survey work at all, which is what makes it cheap to call on every pipeline
+tick — so `pub_layer()` belongs after every `ingest()`, not on a slower
+schedule of its own. Surveys that *are* rebuilt are rebuilt whole, one
+transaction each. `pub_layer(force = TRUE)` overrides the skipping.
+
 | Table | Grain | Notes |
 |---|---|---|
 | `pub.surveys`, `pub.questions`, `pub.options` | one row per entity | typed, language-resolved titles |
@@ -201,6 +209,7 @@ however you need.
 | `meta.survey_state` | survey — change-detection state and failure count |
 | `meta.integrity_checks` | assertion result, passes and failures both |
 | `meta.loads` | `load_pub_layer()` run, and the tables it wrote |
+| `meta.pub_state` | survey built into `pub` — what it was built from, and with |
 
 `db_status()` summarises the latest of these in one row;
 `load_pipeline_health()` copies that row into the analytics database for

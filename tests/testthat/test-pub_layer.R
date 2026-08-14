@@ -368,3 +368,244 @@ test_that("pub_layer(surveys = ) rebuilds only the requested survey", {
   expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.surveys")$n, 1)
   expect_equal(DBI::dbGetQuery(con2, "SELECT survey_id FROM alchemer.pub.surveys")$survey_id, "1")
 })
+
+# --- Incremental rebuilds (ADR-017) -----------------------------------------
+
+# What ingest()'s merge does to a row it actually changed: stamps ingested_at.
+# The tests below edit `raw` directly, so they have to do it themselves.
+stamp_raw <- function(con, table, at = Sys.time()) {
+  DBI::dbExecute(con, glue::glue(
+    "UPDATE alchemer.raw.{table} SET ingested_at = {DBI::dbQuoteLiteral(con, at)}"
+  ))
+}
+
+a_build <- function(...) {
+  modifyList(
+    list(language = "English", tz = "America/Toronto", wide_views = TRUE, package_version = "1.0.0"),
+    list(...)
+  )
+}
+a_prior <- function(...) {
+  as.data.frame(modifyList(
+    list(survey_id = "1", source_watermark = "w", language = "English", tz = "America/Toronto",
+         wide_views = TRUE, package_version = "1.0.0"),
+    list(...)
+  ), stringsAsFactors = FALSE)
+}
+a_watermark <- function(w = "w") data.frame(survey_id = "1", source_watermark = w)
+
+test_that("decide_rebuild: a survey that has never been built is rebuilt", {
+  out <- decide_rebuild("1", a_watermark(), a_prior(survey_id = "other"), a_build())
+  expect_true(out$rebuild)
+  expect_match(out$reason, "never built")
+})
+
+test_that("decide_rebuild: an unchanged survey built the same way is skipped", {
+  out <- decide_rebuild("1", a_watermark(), a_prior(), a_build())
+  expect_false(out$rebuild)
+  expect_equal(out$reason, "unchanged")
+})
+
+test_that("decide_rebuild: a moved watermark rebuilds", {
+  out <- decide_rebuild("1", a_watermark("w2"), a_prior(), a_build())
+  expect_true(out$rebuild)
+  expect_match(out$reason, "raw data changed")
+})
+
+test_that("decide_rebuild: each build setting rebuilds when it changes", {
+  expect_match(
+    decide_rebuild("1", a_watermark(), a_prior(), a_build(language = "French"))$reason, "language"
+  )
+  expect_match(decide_rebuild("1", a_watermark(), a_prior(), a_build(tz = "UTC"))$reason, "tz")
+  expect_match(
+    decide_rebuild("1", a_watermark(), a_prior(), a_build(wide_views = FALSE))$reason, "wide_views"
+  )
+  expect_match(
+    decide_rebuild("1", a_watermark(), a_prior(), a_build(package_version = "1.1.0"))$reason,
+    "different version"
+  )
+})
+
+test_that("decide_rebuild: an unknown watermark is never treated as unchanged", {
+  # A survey_id the caller passed that isn't in raw.surveys at all. There is
+  # nothing to compare it against, so it must fall to the rebuild side.
+  out <- decide_rebuild("1", a_watermark(NA_character_), a_prior(), a_build())
+  expect_true(out$rebuild)
+})
+
+test_that("pub_layer() rebuilds nothing on a second run with nothing changed", {
+  # The property the incremental build exists for: a closed survey with no new
+  # activity costs nothing on every subsequent pipeline tick.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+  expect_equal(pub_layer(dir), character(0))
+
+  # ...and skipping did not cost the data: pub is still complete.
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n, 4)
+})
+
+test_that("pub_layer() rebuilds the changed survey and leaves its neighbour alone", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con, "1", "Survey One")
+  seed_survey(con, "2", "Survey Two")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "
+    INSERT INTO alchemer.raw.responses
+      (survey_id, response_id, status, is_test_data, date_submitted, date_updated,
+       survey_data, is_deleted, ingested_at)
+    VALUES ('2', 'r3', 'Complete', '0', '2026-02-01 10:00:00 EST', '2026-02-01 10:00:05',
+            '{\"2\": {\"answer\": \"Zoe\", \"shown\": true}}', FALSE, now())")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "2")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  expect_equal(
+    DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.responses WHERE survey_id = '2'")$n, 3
+  )
+})
+
+test_that("pub_layer() detects a deletion that never touches ingested_at", {
+  # The case max(ingested_at) alone cannot see: flagging a response deleted
+  # sets is_deleted/deleted_detected_at and leaves ingested_at where it was.
+  # Without deleted_detected_at in the watermark this survey would be skipped
+  # forever, and pub.responses would go on saying the response is live.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  stamp_raw(con, "responses")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "
+    UPDATE alchemer.raw.responses SET is_deleted = TRUE, deleted_detected_at = now()
+    WHERE survey_id = '1' AND response_id = 'r2'")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  expect_true(DBI::dbGetQuery(con2, "
+    SELECT is_deleted FROM alchemer.pub.responses WHERE response_id = 'r2'")$is_deleted)
+})
+
+test_that("pub_layer() detects a row removed outright", {
+  # The count(*) signal: question and option rows that vanish upstream are
+  # deleted rather than flagged, so neither timestamp moves.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  stamp_raw(con, "survey_question_options")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "DELETE FROM alchemer.raw.survey_question_options WHERE option_id = '10002'")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.options")$n, 1)
+})
+
+test_that("pub_layer() rebuilds when tz changes, so pub can't hold two timezones at once", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir, tz = "America/Toronto")
+
+  expect_equal(pub_layer(dir, tz = "UTC"), "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  submitted <- DBI::dbGetQuery(con2, "
+    SELECT date_submitted FROM alchemer.pub.responses WHERE response_id = 'r1'")$date_submitted
+  expect_equal(format(submitted, "%H:%M", tz = "UTC"), "15:00")
+})
+
+test_that("pub_layer(force = TRUE) rebuilds a survey that has not changed", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  expect_equal(pub_layer(dir), character(0))
+  expect_equal(pub_layer(dir, force = TRUE), "1")
+})
+
+test_that("a rebuild that fails partway records no build state and leaves pub as it was", {
+  # The ordering that can actually corrupt the result: if meta.pub_state were
+  # written outside the survey's transaction, a failure here would mark the
+  # survey built from data that had just been rolled back, and every later run
+  # would then skip it -- stale, silently, and forever.
+  #
+  # The failure is real rather than injected: a timezone DuckDB doesn't know
+  # reaches SQL in the *third* of the survey's statements, so pub.questions and
+  # pub.options have already been written when it fires. Both must go back.
+  # (pub_layer() validates tz up front, which is why this calls the internal.)
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+
+  build <- list(
+    language = "English", tz = "Not/AZone", wide_views = TRUE, package_version = "1.0.0"
+  )
+  expect_error(
+    rebuild_survey_atomically(con, "1", "T", "English", "Not/AZone", TRUE, "w", build),
+    "TimeZone"
+  )
+
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.pub.questions")$n, 0)
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.pub_state")$n, 0)
+  # The rollback left the connection usable, not stuck in a failed transaction.
+  expect_equal(DBI::dbGetQuery(con, "SELECT 1 AS ok")$ok, 1)
+})
+
+test_that("an unchanged run costs far fewer snapshots than a rebuild", {
+  # Both halves of the change at once. Every statement outside a transaction is
+  # its own DuckLake snapshot, and a snapshot costs a catalog write however few
+  # rows it carries -- which is what pub_layer()'s runtime actually tracked. A
+  # regression in either the skip or the per-survey transaction shows up here.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con, "1", "Survey One")
+  seed_survey(con, "2", "Survey Two")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  snapshots <- function() {
+    con <- alchemer_db(dir, read_only = TRUE)
+    on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+    DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM __ducklake_metadata_alchemer.ducklake_snapshot")$n
+  }
+
+  before <- snapshots()
+  pub_layer(dir)
+  full <- snapshots() - before
+
+  before <- snapshots()
+  pub_layer(dir)
+  idle <- snapshots() - before
+
+  # One transaction per survey, plus the unconditional pub.surveys rebuild.
+  expect_lte(full, 4)
+  expect_lte(idle, 1)
+  expect_lt(idle, full)
+})

@@ -12,6 +12,12 @@ that keeps it — and optionally your analytics database — current.
   and `vignette("getting-started")`.
 * The database can be read while the pipeline writes to it, so an analyst's
   session never blocks a scheduled run and is never blocked by one.
+* `pub_layer()` rebuilds a survey only when the `raw` rows it is built from have
+  changed, or when the `language`/`tz`/`wide_views` setting or the alchemeR
+  version has. A run where nothing changed upstream now does no per-survey work
+  at all; each survey that is rebuilt is rebuilt whole, in one transaction.
+  `pub_layer(force = TRUE)` rebuilds regardless, and `meta.pub_state` records
+  what each survey was last built from. See `vignette("data-model")`.
 * `pub_layer()` builds tidy, typed, language-resolved tables from `raw`.
   `survey_wide()` computes the one-row-per-respondent shape on demand for any
   survey. For everything else, query the database directly over a plain

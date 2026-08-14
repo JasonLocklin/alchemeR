@@ -4,7 +4,7 @@
 # declared here. Every `raw` column is VARCHAR or JSON (ADR-003); typing
 # happens only in `pub`, built separately by pub_layer().
 
-schema_version <- 1L
+schema_version <- 2L
 
 raw_tables <- list(
   surveys = "
@@ -77,6 +77,16 @@ meta_tables <- list(
     load_id VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP,
     status VARCHAR, destination VARCHAR, n_tables INTEGER, n_rows INTEGER,
     tables JSON, message VARCHAR",
+  # One row per survey built into `pub`, recording what it was built *from* and
+  # *with* (ADR-017). pub_layer() rebuilds a survey only when one of these no
+  # longer matches, so a run where nothing changed upstream does no work.
+  # Every column is part of that comparison: `source_watermark` covers the raw
+  # rows, the other four cover the build itself -- a different `language`,
+  # `tz`, or `wide_views` setting produces different output from identical
+  # input, and a package upgrade may change the pub SQL entirely.
+  pub_state = "
+    survey_id VARCHAR, source_watermark VARCHAR, language VARCHAR, tz VARCHAR,
+    wide_views BOOLEAN, package_version VARCHAR, built_at TIMESTAMP",
   schema_version = "version INTEGER"
 )
 
@@ -185,9 +195,18 @@ ensure_schema <- function(con) {
     DBI::dbExecute(con, glue::glue(
       "INSERT INTO {ducklake_alias}.meta.schema_version VALUES ({schema_version})"
     ))
+  } else if (current[1] < schema_version) {
+    # Version 1 -> 2 adds meta.pub_state, which create_tables() has just
+    # created empty. No data migration is needed or wanted: an empty
+    # pub_state means "no survey has a recorded build", so the next
+    # pub_layer() rebuilds everything once and records it. That is the
+    # correct answer -- nothing here knows what the existing `pub` rows were
+    # built from, and assuming they are current is exactly the stale-data
+    # risk this table exists to remove.
+    DBI::dbExecute(con, glue::glue(
+      "UPDATE {ducklake_alias}.meta.schema_version SET version = {schema_version}"
+    ))
   }
-  # Future schema migrations key off `current` here; there is only one
-  # version so far.
   invisible(TRUE)
 }
 

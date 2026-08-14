@@ -597,6 +597,88 @@ actionable error every pipeline function already gives when it's unset -- is now
 for exactly this: the connect snippet's first line uses it, and a copy-pasted example
 that calls an internal function is worse than the thing this ADR set out to fix.
 
+## ADR-017 — `pub_layer()` rebuilds a survey only when its sources moved
+
+**Date: 2026-08-14.**
+
+**Decision.** `pub_layer()` records, per survey, a **watermark** of the `raw` rows it built
+from and the settings it built with (`meta.pub_state`), and skips any survey where both
+still match. A survey that is rebuilt is still rebuilt *whole*, in one transaction —
+there is no row-level or partial update of `pub`. This is ADR-013's reasoning ("merge,
+don't replace") applied to the layer above it, arrived at the same way: by measuring.
+
+**Why.** `pub_layer()` rebuilt every survey in the account on every run, closed surveys
+with no activity since 2023 included. *Measured* on a synthetic 50-survey, 27k-response,
+543k-answer archive:
+
+| Run | Before | After | Snapshots after |
+|---|---|---|---|
+| Full build | 35s | 17.7s | 51 |
+| Nothing changed upstream | 43s | 0.79s | 1 |
+| 3 of 50 surveys changed | 43s | 2.3s | 4 |
+
+51 snapshots for a 50-survey build is the whole of the second change visible in one
+number: one transaction per survey, plus one for `pub.surveys`.
+
+The idle run being *slower* than the cold one, before, is not noise: each re-run left
+another generation of delete files behind (254 → 455 → 656 Parquet files over three
+identical runs), which is ADR-013's write amplification in the `pub` schema.
+
+*Verified* rather than assumed: after an incremental run, `pub.answers` matches a
+`force = TRUE` full rebuild of the same `raw` exactly — same row count, same content
+hash across all 543,280 rows. Skipping work changed nothing about the result.
+
+**The cost was never in the rows.** The per-stage breakdown is what shaped this design:
+writing 1,000 question rows cost 9.0s while writing 543,200 answer rows cost 13.1s, and
+the single most expensive stage — 15.9s — was regenerating the wide views, which write no
+data at all. Every statement outside a transaction is its own DuckLake snapshot, and a
+snapshot costs a catalog write regardless of how many rows it carries; one run was ~500 of
+them. So each survey's statements are now grouped into one transaction. Measured on its
+own, before the skipping was added, that change alone took a full rebuild from 778
+snapshots and 43s to 128 and 25s — and the same transaction is what makes the
+`meta.pub_state` row commit atomically with the rows it describes.
+
+**How a change is detected.** Three signals per source table, because there are three ways
+a row can change and no one column catches all of them:
+
+| Signal | Catches | Missed without it |
+|---|---|---|
+| `max(ingested_at)` | inserts and edits | everything |
+| `max(deleted_detected_at)` | a row *flagged* deleted | flagging sets only `is_deleted`/`deleted_detected_at`, so `ingested_at` never moves |
+| `count(*)` | a row removed outright | `on_vanished = "delete"` rows, and `expunge()` |
+
+`raw.surveys` additionally contributes its columns **by value** — it is one row per survey,
+so reading the real title/status/type/`modified_on`/`is_deleted` costs nothing and removes
+that table's dependence on bookkeeping being stamped correctly. It earns its place: the
+title is what the wide view is *named* after, so a missed retitle strands a view under a
+name no longer in `pub.surveys`. Doing the same for responses would mean reading every
+answer to decide whether to read every answer.
+
+**This rests on ADR-013.** `ingest()` merges rather than replaces, so `ingested_at` advances
+only for rows that actually changed — the property asserted by *"re-refreshing unchanged
+data rewrites nothing"* in `test-ingest.R`. Were that to regress to replace-wholesale,
+every watermark would move every run and this degrades to the old behaviour: slow, never
+wrong. That is the direction every failure mode here points.
+
+**Consequences and traps.**
+
+- Skipping is decided per survey, but `pub.surveys` is rebuilt unconditionally for every
+  survey considered (0.17s for 50). Survey-level facts can never be the thing that goes
+  stale while the expensive tables are skipped.
+- The watermark is read **once, before any rebuild transaction opens**, and recorded
+  verbatim. A rebuild's own transaction can then only ever see a snapshot at or newer than
+  the one measured, so a concurrent `ingest()` costs at worst one redundant rebuild next
+  run. Recording it *after* would invert this into skipping a real change forever.
+- `language`, `tz`, `wide_views`, and the package version are compared as well as the
+  watermark: identical input still produces different output under a different setting.
+  Without `wide_views` in that comparison, a run with `wide_views = FALSE` would mark
+  surveys built and a later `TRUE` run would never create the views.
+- `expunge()` edits `raw` and `pub` behind `pub_layer()`'s back, so it clears
+  `meta.pub_state` entirely — a full rebuild from the post-expunge `raw` is exactly what
+  should follow it.
+- Unknown values (`NA` on either side of a comparison) always fall to the rebuild side. An
+  unknown can never be evidence that a rebuild is unnecessary.
+
 ---
 
 # 5. Why DuckLake, and not Iceberg
