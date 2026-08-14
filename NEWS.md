@@ -12,6 +12,13 @@ that keeps it — and optionally your analytics database — current.
   and `vignette("getting-started")`.
 * The database can be read while the pipeline writes to it, so an analyst's
   session never blocks a scheduled run and is never blocked by one.
+* The application database carries a `major.minor` schema version. A minor bump
+  (a change to `pub` or the SQL that builds it) makes `pub_layer()` drop and
+  rebuild the whole `pub` schema automatically, so it can't drift. A major bump
+  (a change to the archival `raw` layer) makes `ingest()` and `pub_layer()`
+  stop and tell you to archive and rebuild the directory, or migrate it by
+  hand — there is no automatic migration of an archive. `db_status()` and
+  `db_check()` keep working either way.
 * `pub_layer()` rebuilds a survey only when the `raw` rows it is built from have
   changed, or when the `language`/`tz`/`wide_views` setting or the alchemeR
   version has. A run where nothing changed upstream now does no per-survey work

@@ -380,15 +380,12 @@ stamp_raw <- function(con, table, at = Sys.time()) {
 }
 
 a_build <- function(...) {
-  modifyList(
-    list(language = "English", tz = "America/Toronto", wide_views = TRUE, package_version = "1.0.0"),
-    list(...)
-  )
+  modifyList(list(language = "English", tz = "America/Toronto", wide_views = TRUE), list(...))
 }
 a_prior <- function(...) {
   as.data.frame(modifyList(
     list(survey_id = "1", source_watermark = "w", language = "English", tz = "America/Toronto",
-         wide_views = TRUE, package_version = "1.0.0"),
+         wide_views = TRUE),
     list(...)
   ), stringsAsFactors = FALSE)
 }
@@ -419,10 +416,6 @@ test_that("decide_rebuild: each build setting rebuilds when it changes", {
   expect_match(decide_rebuild("1", a_watermark(), a_prior(), a_build(tz = "UTC"))$reason, "tz")
   expect_match(
     decide_rebuild("1", a_watermark(), a_prior(), a_build(wide_views = FALSE))$reason, "wide_views"
-  )
-  expect_match(
-    decide_rebuild("1", a_watermark(), a_prior(), a_build(package_version = "1.1.0"))$reason,
-    "different version"
   )
 })
 
@@ -565,9 +558,7 @@ test_that("a rebuild that fails partway records no build state and leaves pub as
   seed_survey(con)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
 
-  build <- list(
-    language = "English", tz = "Not/AZone", wide_views = TRUE, package_version = "1.0.0"
-  )
+  build <- list(language = "English", tz = "Not/AZone", wide_views = TRUE)
   expect_error(
     rebuild_survey_atomically(con, "1", "T", "English", "Not/AZone", TRUE, "w", build),
     "TimeZone"
@@ -577,6 +568,50 @@ test_that("a rebuild that fails partway records no build state and leaves pub as
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.meta.pub_state")$n, 0)
   # The rollback left the connection usable, not stuck in a failed transaction.
   expect_equal(DBI::dbGetQuery(con, "SELECT 1 AS ok")$ok, 1)
+})
+
+test_that("a schema minor bump rebuilds pub from scratch and clears the drift", {
+  # What the minor version is for (ADR-018): `pub` is derived, so a change to
+  # its tables or the SQL that fills them is fixed by throwing the layer away
+  # and rebuilding it -- including structure that CREATE TABLE IF NOT EXISTS
+  # would otherwise leave in place forever.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  # Drift of both kinds: a stale column on a pub table, and a whole table left
+  # behind by a version that no longer declares it.
+  DBI::dbExecute(con, "ALTER TABLE alchemer.pub.answers ADD COLUMN legacy_col VARCHAR")
+  DBI::dbExecute(con, "CREATE TABLE alchemer.pub.legacy_table (x VARCHAR)")
+  stamp_schema_version(con, schema_major, schema_minor - 1L)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  columns <- DBI::dbGetQuery(con2, "
+    SELECT column_name FROM information_schema.columns
+    WHERE table_catalog = 'alchemer' AND table_schema = 'pub' AND table_name = 'answers'")
+  expect_false("legacy_col" %in% columns$column_name)
+  expect_false(table_exists(con2, "pub", "legacy_table"))
+  # Rebuilt, not merely emptied, and the new version recorded.
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n, 4)
+  expect_equal(db_schema_version(con2)$minor, schema_minor)
+})
+
+test_that("the run after a minor bump is incremental again", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  seed_survey(con)
+  stamp_schema_version(con, schema_major, schema_minor - 1L)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+  expect_equal(pub_layer(dir), character(0))
 })
 
 test_that("an unchanged run costs far fewer snapshots than a rebuild", {

@@ -178,10 +178,9 @@ differs <- function(x, y) is.na(x) | is.na(y) | x != y
 #
 # `build` describes how this run would build a survey. It is compared as well
 # as the watermark because identical input still produces different output
-# under a different setting: `language` and `tz` change the values written,
-# `wide_views` changes whether the view exists at all, and a package upgrade
-# can change the pub SQL itself. Any of them moving forces the rebuild that
-# would otherwise be skipped.
+# under a different setting: `language` and `tz` change the values written, and
+# `wide_views` changes whether the view exists at all. A change to the pub SQL
+# itself is handled a level up, by the schema minor version (ADR-018).
 decide_rebuild <- function(survey_ids, watermarks, prior, build) {
   current <- watermarks$source_watermark[match(survey_ids, watermarks$survey_id)]
   i <- match(survey_ids, prior$survey_id)
@@ -197,8 +196,6 @@ decide_rebuild <- function(survey_ids, watermarks, prior, build) {
   reason[unset() & differs(prior$language[i], build$language)] <- "language changed"
   reason[unset() & differs(prior$tz[i], build$tz)] <- "tz changed"
   reason[unset() & differs(prior$wide_views[i], build$wide_views)] <- "wide_views changed"
-  reason[unset() & differs(prior$package_version[i], build$package_version)] <-
-    "built by a different version of alchemeR"
 
   tibble::tibble(
     survey_id = survey_ids,
@@ -220,7 +217,6 @@ record_pub_state <- function(con, survey_id, watermark, build, now) {
     language = build$language,
     tz = build$tz,
     wide_views = build$wide_views,
-    package_version = build$package_version,
     built_at = now
   ))
 }
@@ -483,6 +479,26 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
   }
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  assert_schema_compatible(con, db)
+
+  # A publication-layer schema change -- a bump of the schema *minor* version
+  # (ADR-018) -- means `pub`'s tables, or the SQL that fills them, are not the
+  # ones the stored rows were built with. Everything in `pub` is dropped,
+  # recreated from the current DDL, and rebuilt below from `raw`, which is what
+  # keeps `pub` from drifting: CREATE TABLE IF NOT EXISTS would otherwise leave
+  # a table created by an older version with its old columns forever.
+  #
+  # The new version is stamped in the same transaction as the reset, and before
+  # any survey is rebuilt, so this is resumable: if the rebuild that follows is
+  # interrupted, the next run doesn't reset again -- it finds an empty
+  # meta.pub_state and simply builds the surveys that didn't get done.
+  stamped <- db_schema_version(con)
+  if (!is.null(stamped) && !identical(stamped$minor, schema_minor)) {
+    DBI::dbExecute(con, "BEGIN")
+    reset_pub_schema(con)
+    stamp_schema_version(con, schema_major, schema_minor)
+    DBI::dbExecute(con, "COMMIT")
+  }
 
   survey_ids <- if (!is.null(surveys)) {
     as.character(surveys)
@@ -493,10 +509,7 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
     return(invisible(character(0)))
   }
 
-  build <- list(
-    language = language, tz = tz, wide_views = isTRUE(wide_views),
-    package_version = as.character(utils::packageVersion("alchemeR"))
-  )
+  build <- list(language = language, tz = tz, wide_views = isTRUE(wide_views))
 
   # Read once, before any rebuild transaction opens, and recorded verbatim for
   # every survey built in this run. Reading it *first* -- rather than after

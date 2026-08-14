@@ -679,6 +679,50 @@ wrong. That is the direction every failure mode here points.
 - Unknown values (`NA` on either side of a comparison) always fall to the rebuild side. An
   unknown can never be evidence that a rebuild is unnecessary.
 
+## ADR-018 — The application schema is versioned `major.minor`, and the halves mean different things
+
+**Date: 2026-08-14.**
+
+**Decision.** `meta.schema_version` holds a **major** and a **minor** number, and they are
+acted on differently because the two layers are worth different amounts.
+
+| Bump | When | What happens |
+|---|---|---|
+| **minor** | `pub`'s tables, or the SQL that fills them, change | `pub_layer()` drops the whole `pub` schema, recreates it from the current DDL, and rebuilds every survey. Automatic; nothing is lost. |
+| **major** | `raw`'s layout or meaning changes, or any other change an existing database can't be carried across | `ingest()` **and** `pub_layer()` refuse to run. The directory must be archived and rebuilt from the API, or migrated by hand and restamped. |
+
+**Why the asymmetry.** `raw` is the archive, and once Alchemer has moved on it cannot be
+regenerated — so a change this code doesn't understand must stop, loudly, before it writes.
+`pub` is derived from `raw` alone (ADR-008), so the same class of change there needs no
+migration at all: throwing the layer away and rebuilding it is always available, and is
+strictly more reliable than any migration anyone would write.
+
+**What this replaces.** ADR-017's `meta.pub_state` originally carried the alchemeR package
+version, so any upgrade forced a full rebuild. That is both too eager (a patch release that
+never touches `pub` costs a full rebuild) and too weak (it re-fills tables but cannot change
+their *shape* — `CREATE TABLE IF NOT EXISTS` leaves a column added by an older version in
+place forever). The minor version replaces it on both counts: it fires only when someone
+says the pub layer changed, and it invalidates structure as well as content.
+
+**Consequences and traps.**
+
+- The assertion lives in `ingest()` and `pub_layer()`, deliberately **not** in
+  `alchemer_db()`. `db_status()`, `db_check()`, and a plain read-only connection all still
+  work on a database the writers refuse — being told to archive and rebuild is exactly when
+  someone needs to look inside it first.
+- A major difference fails in **both** directions. A database older than the code may be
+  missing structure the code assumes; one newer may carry meanings this version doesn't
+  know. Neither can be guessed at.
+- `ensure_schema()` stamps only a database that has never been stamped. It must never
+  quietly bring a version up to the current one: the difference *is* the signal.
+- The minor reset stamps the new version in the same transaction as the reset, before any
+  survey is rebuilt, which makes it resumable. An interrupted post-bump rebuild doesn't
+  reset a second time; it finds an empty `meta.pub_state` and finishes the surveys left.
+- The reset covers `meta.pub_state` too. It lives in `meta` but belongs to the publication
+  layer, and its own columns can drift exactly as `pub`'s can.
+- A database stamped under the pre-split single `version N` reads as major 1, minor N —
+  every version stamped under that scheme was a publication-layer change.
+
 ---
 
 # 5. Why DuckLake, and not Iceberg

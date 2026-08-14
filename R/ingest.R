@@ -266,6 +266,10 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
   run_started_at <- Sys.time()
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  # Before the run is logged, let alone before a request is made: writing to an
+  # archive whose layout this code doesn't understand is the one failure that
+  # can't be undone by running again (ADR-018).
+  assert_schema_compatible(con, db)
 
   if (!dry_run) {
     write_rows_generic(con, "meta.runs", tibble::tibble(

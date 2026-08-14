@@ -210,6 +210,25 @@ however you need.
 | `meta.integrity_checks` | assertion result, passes and failures both |
 | `meta.loads` | `load_pub_layer()` run, and the tables it wrote |
 | `meta.pub_state` | survey built into `pub` — what it was built from, and with |
+| `meta.schema_version` | the database's own `major.minor` schema version |
+
+### Schema versions
+
+The database records its own schema version as `major.minor`, and the two mean
+different things because the two layers are worth different amounts.
+
+A **minor** bump means `pub` changed — its tables, or the SQL that fills them.
+`pub_layer()` handles it with no input from you: it drops the `pub` schema,
+recreates it, and rebuilds every survey from `raw`. Nothing is at risk, because
+`pub` is derived.
+
+A **major** bump means the archival `raw` layer changed in a way an existing
+database can't be carried across. `ingest()` and `pub_layer()` both stop and
+say so, rather than write into an archive whose layout they don't understand.
+There is no automatic migration: archive the directory and rebuild it from the
+API with a fresh `ALCHEMER_DB`, or migrate it by hand and restamp
+`meta.schema_version`. Reading still works throughout — `db_status()` and
+`db_check()` are exactly what you want when deciding which route to take.
 
 `db_status()` summarises the latest of these in one row;
 `load_pipeline_health()` copies that row into the analytics database for
