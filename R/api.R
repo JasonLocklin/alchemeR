@@ -176,11 +176,19 @@ page_is_complete <- function(resp) {
 #' at `resultsperpage = 500` (the documented maximum).
 #'
 #' @inheritParams alchemer_fetch
-#' @param resultsperpage Page size, max 500.
+#' @param resultsperpage Default page size, max 500. A `resultsperpage` in
+#'   `query` takes precedence.
 #' @return A list of the combined `data` elements across every page.
 #' @keywords internal
 alchemer_fetch_all <- function(client, path, query = list(), resultsperpage = 500) {
-  query$resultsperpage <- resultsperpage
+  # A caller-supplied page size wins. This used to overwrite `query`
+  # unconditionally, so alchemer_responses()' documented `...` passthrough
+  # silently discarded a `resultsperpage`. Page size is not only politeness:
+  # Alchemer times a response out at 30 seconds, so a survey wide enough that
+  # 500 responses take longer than that to generate is only fetchable in
+  # smaller pages -- and being unable to ask for them made that diagnosis
+  # impossible to even test.
+  query$resultsperpage <- query$resultsperpage %||% resultsperpage
   req <- alchemer_request(client, path, query)
 
   resps <- tryCatch(

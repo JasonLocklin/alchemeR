@@ -22,6 +22,12 @@ that keeps it — and optionally your analytics database — current.
   `vignette("scheduling")`.
 * Maintenance: `db_status()`, `db_check()`, `compact()`, `expire_history()`, and
   `expunge()` (which removes data *and* its history, for retention obligations).
+* `ingest_failures()` names the surveys currently failing to refresh and why —
+  message, status code, and any failed integrity assertion. `ingest()` warns
+  when a run has failures rather than reporting them only in an invisible
+  return value, and that return value now carries each failure's `message` and
+  `http_status` alongside its `status`. `vignette("troubleshooting")` covers
+  reading them, and the causes that recur.
 * `alchemer_db()` / `alchemer_tbl()` open and query the database directly, for
   dplyr and dbplyr users.
 
@@ -62,6 +68,25 @@ All settings come from the environment; see
 
   Code relying on any of those exact shapes needs updating at the point of use,
   not just silencing the warning.
+
+## Bug fixes
+
+* **A failed survey refresh is retried on the next run.** A failure used to
+  record the change-detection values it had just failed to archive, so the next
+  run compared them against themselves, decided "no change detected", and
+  skipped the survey — silently, for up to `ALCHEMER_FULL_SWEEP_DAYS` (90 by
+  default) or until the survey changed again upstream. A survey could therefore
+  sit un-refreshed with responses waiting, showing `consecutive_failures` frozen
+  at 1. Change detection now stays pointed at the last *successful* state, so a
+  failed survey is retried until it succeeds.
+
+  If you are upgrading with surveys already parked this way, refresh them once
+  explicitly — `ingest(surveys = c("123", "456"))` always refreshes, regardless
+  of change detection — or run `ingest(force = TRUE)` once.
+* `alchemer_responses()` and the other direct-API functions honour a
+  `resultsperpage` passed through `...`. It was documented but silently reset
+  to 500, which made a smaller page size impossible to ask for — the one knob
+  that can get a very wide survey under Alchemer's 30-second response timeout.
 
 ## Other changes
 

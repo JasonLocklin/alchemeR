@@ -20,9 +20,10 @@ reference:
   - alchemer_tbl
   - survey_wide
 
-- title: Maintenance
+- title: Monitoring and maintenance
   contents:
   - db_status
+  - ingest_failures
   - db_check
   - compact
   - expire_history

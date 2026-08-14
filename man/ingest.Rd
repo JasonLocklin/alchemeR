@@ -44,8 +44,11 @@ valid, empty database behind.}
 environment; tests pass a fixture-backed client (ADR-010).}
 }
 \value{
-Invisibly, a tibble with one row per survey considered: decision,
-counts, timings, and status.
+Invisibly, a tibble with one row per survey considered:
+\code{survey_id}, the \code{decision} that was made and whether it led to a
+\code{refresh}ed survey, \code{n_fetched}, a \code{status} of \code{"ok"}/\code{"skipped"}/
+\code{"dry_run"}/\code{"error"}, the failure \code{message} and \code{http_status} when that
+status is \code{"error"}, and timings.
 }
 \description{
 Downloads every survey's full definition and \strong{all} of its responses
@@ -55,4 +58,20 @@ Change detection (\code{date_updated}, \code{modified_on}, \code{total_count}) d
 only \emph{when} a survey is worth refreshing, and is designed to be safely
 wrong: an incorrect hint costs freshness, bounded by \code{full_sweep_days},
 never a missing or wrong row.
+}
+\section{When a survey fails}{
+
+A failure is scoped to one survey. Its refresh is rolled back whole, so the
+data already archived for it is left exactly as it was, every other survey
+still commits, and the next run tries again -- there is nothing to clean up
+and no partial state to reconcile.
+
+\code{ingest()} warns when any survey failed, and the reason is on the returned
+tibble. It is also persisted: see \code{\link[=ingest_failures]{ingest_failures()}} for the surveys
+currently failing and why, and \code{vignette("troubleshooting")} for how to read
+a particular message.
+}
+
+\seealso{
+\code{\link[=ingest_failures]{ingest_failures()}}, \code{\link[=db_status]{db_status()}}, \code{\link[=db_check]{db_check()}}
 }

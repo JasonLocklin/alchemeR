@@ -1,0 +1,304 @@
+---
+title: "When an ingest fails"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{When an ingest fails}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
+```
+
+## Start here
+
+```{r}
+library(alchemeR)
+
+ingest_failures()
+```
+
+One row per survey whose last refresh failed, worst first, with the reason
+attached. Zero rows means nothing is currently failing.
+
+```
+# A tibble: 2 x 10
+  survey_id title            consecutive_failures last_successful_refresh_at ...
+  <chr>     <chr>                           <int> <dttm>
+1 7392011   Exit Survey 2025                    9 2026-08-01 03:15:22
+2 7418330   Staff Pulse                         9 2026-08-01 03:16:04
+```
+
+Read that row by row:
+
+- **`consecutive_failures`** is the shape of the problem. Climbing on every run
+  means a *persistent* cause — something about those specific surveys, or about
+  the account. A 1 that clears itself next run was a blip.
+
+  A count **stuck at 1 across many runs**, on a survey that is plainly not
+  current, means something different: it predates the 1.0.0 fix for failures
+  that parked a survey instead of retrying it (see `NEWS.md`). Refresh those
+  surveys once explicitly and the count starts telling the truth again:
+
+  ```{r}
+  ingest(surveys = c("7392011", "7418330"))
+  ```
+- **`last_successful_refresh_at`** is how stale the archived data is. It is also
+  the reassurance: the data as of that timestamp **is still there and still
+  correct**. Each survey refreshes inside one transaction, so a failure rolls
+  it back whole — it cannot leave a survey half-updated.
+- **`http_status`**, **`message`**, and **`failed_checks`** are the diagnosis.
+  The next two sections decode them.
+
+## What a failure has and hasn't done
+
+Worth being clear about before you start digging, because it changes how urgent
+this is:
+
+- **The failure is scoped to one survey.** Its refresh runs in its own
+  transaction; every other survey in the run still committed.
+- **Nothing was lost.** The rollback restores the survey exactly as it was, and
+  `raw` never deletes rows anyway — an upstream deletion is flagged, not removed
+  (ADR-005).
+- **It retries by itself.** A failure does not advance the survey's
+  change-detection state, so the next run still sees a difference and refreshes
+  it again — and keeps doing so until it succeeds. You do not have to intervene
+  to get it retried; you intervene to stop it failing.
+- **`pub` still reflects the last good `raw`.** `pub_layer()` rebuilds from
+  whatever is archived, so downstream consumers see stale-but-consistent data
+  for that survey, never a partial one.
+
+So a handful of failures on one run is noise. The same surveys failing every
+run is the thing to chase — and that is what `consecutive_failures` tells you.
+
+## Reading the message
+
+Four shapes turn up, and each points somewhere different.
+
+### `Alchemer API request failed. ... HTTP status: N`
+
+The request itself failed. 429 and the 5xx family are already retried with
+exponential backoff — five attempts in total — before the error surfaces, so
+seeing one of those statuses here means it failed *persistently*, not once.
+
+| Status | Almost always |
+|---|---|
+| 401, 403 | Credentials. See "Whole-account failures" below. |
+| 404 | The survey vanished between discovery and refresh — usually self-correcting; it will be flagged deleted on the next run. |
+| 400 | Frequently the *aftershock* of a timeout — see below. |
+| 500 | Alchemer's own 30-second response timeout, if it's the same big survey every time. |
+| `unknown (connection failure)` | Network, DNS, or proxy — not Alchemer. |
+
+The message carries the request path with its query string stripped, so you can
+see *which* endpoint failed (`/surveyresponse`, `/surveyquestion`, …) without
+the credentials ever reaching a log.
+
+### `Alchemer API returned an error. ... Code: N Message: ...`
+
+HTTP said 200; the envelope said `result_ok: false`. `Code` is Alchemer's own,
+and it is HTTP-shaped — `401` here is "Login failed / Invalid auth token"
+arriving inside a 200 response. `Message` is Alchemer's text verbatim.
+
+### `integrity check(s) failed: ...`
+
+The fetch worked and the write worked, but what landed did not satisfy an
+assertion, so the refresh was rolled back rather than committed (ADR-006 —
+DuckLake declares no primary keys, so these properties are asserted rather than
+enforced). `failed_checks` names them:
+
+- **`no_duplicate_responses`** — the same `response_id` arrived twice. The
+  classic cause is *unstable pagination*: `ingest()` pages through
+  `/surveyresponse` 500 at a time, and if responses are submitted or edited
+  mid-fetch, a row can shift across a page boundary and be read twice.
+- **`response_count_matches_fetch`** — the number of live rows stored disagrees
+  with the number the refresh believed it fetched. Usually the same cause, seen
+  from the other side.
+- **`responses_reference_known_surveys`** / **`options_reference_known_questions`**
+  — a referential gap, which is unusual and worth reporting.
+
+For the pagination ones, first just **re-run that survey** — the race is
+timing-dependent and often does not repeat:
+
+```{r}
+ingest(surveys = "7392011")
+```
+
+If it repeats every run, the survey is busy enough that a fetch never sees a
+quiet moment. Ingesting it at a quieter hour is the practical workaround.
+
+### Anything else
+
+A message that looks like neither an API error nor an assertion is a bug in the
+package or a database-level problem. `meta.run_events.message` has the full
+text; that is what to include in an issue.
+
+## Whole-account failures
+
+If **every** survey is failing rather than two, stop reading per-survey detail —
+the cause is account-wide. In rough order of likelihood:
+
+1. **Wrong regional domain.** Alchemer's own docs call this "one of the most
+   common causes of failed API calls", and it fails with misleading symptoms:
+   "Login failed / Invalid auth token", empty responses, or connection timeouts,
+   all with perfectly valid credentials. Set `ALCHEMER_DOMAIN` to match your
+   account — `api.alchemer.com` (US), `api.alchemer.eu`, `api.alchemer-ca.com`,
+   `api.au.alchemer.com`.
+2. **The key was replaced.** Generating a new API key for a user *immediately
+   invalidates the old one*, and keys are per-user — a colleague regenerating
+   theirs does not affect yours, but someone regenerating the pipeline's key
+   silently breaks it.
+3. **API access restricted or disabled.** Account admins can restrict which
+   methods are permitted (Account > Integrations > Manage API), and Alchemer
+   disables API access outright for repeated rate-limit violations.
+4. **Rate limiting.** The account-wide ceiling is 240 requests/minute; the
+   default `ALCHEMER_RPM` of 100 deliberately leaves headroom for interactive
+   use of the same account. If you have raised it, or several jobs share the
+   account, lower it.
+
+A failure *before* any survey is reached — discovery itself — never gets a
+per-survey record, because the run never got that far. Its signature is a
+`meta.runs` row stuck at `status = 'running'`:
+
+```{r}
+con <- alchemer_db(read_only = TRUE)
+
+alchemer_tbl(con, "meta.runs") |>
+  dplyr::filter(status == "running") |>
+  dplyr::collect()
+```
+
+That means the run died mid-flight — a failed survey-list request, a killed
+process, a machine rebooted under a cron job. The console or log output of that
+run is the only record of why, which is a good reason for the crontab lines in
+`vignette("scheduling")` to redirect output to a file.
+
+## The same surveys, every run
+
+The pattern worth its own section, because it has a specific and non-obvious
+cause. If a couple of surveys fail on every run with a **500**, and they are
+your **largest** surveys, the likely explanation is Alchemer's **30-second
+response timeout**: a page of 500 responses from a survey with very wide or
+very numerous questions can take longer than that to generate. Alchemer answers
+500, and — per its own documentation — returns **400 for the following minute**,
+which is why the retries do not rescue it.
+
+The signature is distinctive: the same survey ids every run, a rising
+`consecutive_failures`, a `message` naming `/surveyresponse`, and no problem at
+all with the smaller surveys in the same account.
+
+To confirm it, fetch the survey by hand at `ingest()`'s page size and then at a
+much smaller one. `alchemer_responses()` passes query parameters through, so
+you can vary exactly the thing under suspicion:
+
+```{r}
+client <- alchemer_client()
+
+# What ingest() asks for: 500 responses in one request.
+system.time(alchemer_responses("7392011", client = client, resultsperpage = 500))
+
+# The same data in smaller bites. Wait a minute in between -- Alchemer caches
+# identical GETs for 60 seconds, so back-to-back attempts measure the cache.
+system.time(alchemer_responses("7392011", client = client, resultsperpage = 50))
+```
+
+A first call that errors or takes anything near 30 seconds while the second
+succeeds comfortably confirms the timeout. Compare against a survey that
+ingests fine, at the same page size, to rule out something specific to these
+two.
+
+If that is the cause, note that `ingest()` itself has no page-size setting
+today — it always asks for 500. Until it does, the workable mitigations are to
+run those surveys when the account is otherwise quiet, and to raise it with
+Alchemer support for the specific survey. Please also open an issue with the
+survey's response and question counts: a configurable page size is the right
+fix, and that is the evidence for making it.
+
+## Where the detail is kept
+
+`ingest_failures()` answers the standing question. Everything behind it is in
+the `meta` schema, and none of it is inside the transaction that gets rolled
+back (ADR-007) — failure records are written precisely so they outlive the
+failure:
+
+| Table | One row per | Use it for |
+|---|---|---|
+| `meta.runs` | `ingest()` run | Did the run finish? How many failed? How many requests did it cost? |
+| `meta.run_events` | decision, probe, refresh, run | The full log — including probes that failed without failing their survey |
+| `meta.survey_state` | survey | Current per-survey state: `consecutive_failures`, last success |
+| `meta.integrity_checks` | assertion | Every check, **pass and fail**, from every run |
+| `meta.loads` | `load_pub_layer()` run | The Load stage, if you use it |
+
+Query them like any other table:
+
+```{r}
+con <- alchemer_db(read_only = TRUE)
+
+# Everything that went wrong in the last 24 hours, newest first
+alchemer_tbl(con, "meta.run_events") |>
+  dplyr::filter(status == "error", finished_at > Sys.time() - 86400) |>
+  dplyr::arrange(dplyr::desc(finished_at)) |>
+  dplyr::collect()
+
+# One survey's whole history, decisions included: is it failing, or was it
+# never being refreshed in the first place?
+alchemer_tbl(con, "meta.run_events") |>
+  dplyr::filter(survey_id == "7392011") |>
+  dplyr::arrange(dplyr::desc(finished_at)) |>
+  dplyr::collect()
+
+# Probe failures that did not fail their survey -- they cost requests and
+# defeat change detection, so a survey with many is being refreshed on every
+# single run for no reason.
+alchemer_tbl(con, "meta.run_events") |>
+  dplyr::filter(phase == "probe", status == "error") |>
+  dplyr::count(survey_id) |>
+  dplyr::collect()
+
+DBI::dbDisconnect(con, shutdown = TRUE)
+```
+
+`meta.run_events` grows by a few rows per survey per run and is never trimmed by
+`compact()` or `expire_history()`, so the history is there for as long as the
+database is.
+
+## Investigating one survey
+
+```{r}
+# 1. Reproduce it, on that survey alone. `surveys=` always refreshes,
+#    regardless of change detection, and the reason comes back in `message`.
+out <- ingest(surveys = "7392011")
+out$message
+
+# 2. Is it the refresh, or was the data already inconsistent? These are the
+#    same assertions ingest() runs, account-wide and read-only.
+db_check()
+
+# 3. What is actually archived for it right now?
+con <- alchemer_db(read_only = TRUE)
+alchemer_tbl(con, "raw.responses") |>
+  dplyr::filter(survey_id == "7392011") |>
+  dplyr::count(is_deleted) |>
+  dplyr::collect()
+```
+
+`ingest(dry_run = TRUE)` is the safer first step when you are not sure which
+surveys are involved: it makes the same discovery and probe requests and reports
+the same decisions, but writes nothing.
+
+If a refresh has committed something you want to inspect against its
+predecessor, the archive is versioned — `vignette("data-model")` covers time
+travel, which lets you query the survey as of the snapshot before the change.
+
+## Getting alerted instead of noticing
+
+`ingest()` now warns when any survey failed, so a scheduled run's log says so
+without anyone reading a tibble. Beyond that:
+
+- `inst/scripts/ingest_job.R` and `etl_pipeline.R` both print the failing
+  surveys with their messages — use them as the basis for your own job.
+- `db_status()` is the one-row summary; `last_run_status` is
+  `"completed_with_errors"` when any survey failed.
+- `load_pipeline_health()` copies that row into your analytics database, so an
+  alert on "status is not completed" or "last load older than X" needs no access
+  back to `ALCHEMER_DB`. See `vignette("scheduling")`.

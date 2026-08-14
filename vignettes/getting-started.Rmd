@@ -59,6 +59,11 @@ db_check()
 re-runs the integrity assertions `ingest()` already ran after that survey
 committed — cheap reassurance before trusting the database with everything.
 
+If `ingest()` warns that a survey failed, `ingest_failures()` says which and
+why. A failure is scoped to that one survey — rolled back whole, retried on the
+next run — so it is worth investigating but never leaves a mess behind. See
+`vignette("troubleshooting")`.
+
 ## The real thing
 
 ```{r}
