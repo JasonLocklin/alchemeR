@@ -7,7 +7,8 @@
 alchemer_tbl(con, table)
 }
 \arguments{
-\item{con}{A connection from \code{\link[=alchemer_db]{alchemer_db()}}.}
+\item{con}{A \code{DBI} connection with the catalog attached as \code{alchemer} --
+see \code{vignette("getting-started")} for how to open one.}
 
 \item{table}{Schema-qualified table name, e.g. \code{"raw.responses"}.}
 }

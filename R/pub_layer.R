@@ -321,7 +321,8 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
 #' The same shape as `pub.wide_*` views, computed directly for a survey
 #' that hasn't been through [pub_layer()] (or whose view is stale).
 #'
-#' @param con A connection from [alchemer_db()].
+#' @param con A `DBI` connection with the catalog attached as `alchemer` --
+#'   see `vignette("getting-started")` for how to open one.
 #' @param survey_id Survey id.
 #' @return A tibble, one row per respondent.
 #' @export

@@ -22,8 +22,11 @@ that keeps it — and optionally your analytics database — current.
   `vignette("scheduling")`.
 * Maintenance: `db_status()`, `db_check()`, `compact()`, `expire_history()`, and
   `expunge()` (which removes data *and* its history, for retention obligations).
-* `alchemer_db()` / `alchemer_tbl()` open and query the database directly, for
-  dplyr and dbplyr users.
+* `alchemer_tbl()` / `survey_wide()` query the database directly, for dplyr
+  and dbplyr users, over a plain `DBI::dbConnect()` connection you open
+  yourself (see `vignette("getting-started")`) — there is no `alchemer_db()`
+  connect helper, so the ATTACH mechanics aren't hidden and RStudio's
+  Connections pane can still see the connection (ADR-016).
 
 ## Configuration
 

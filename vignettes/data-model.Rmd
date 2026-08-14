@@ -25,8 +25,9 @@ It's a [DuckLake](https://ducklake.select/) database: Parquet for the data, a
 small SQL database tracking table structure, snapshots, and where every row
 lives. The catalog is SQLite rather than a DuckDB file because that is what
 allows more than one process to use it — analysts can query the database while
-the pipeline writes to it, with no lock to wait for. `alchemer_db()` attaches
-it under the alias `alchemer`, with three schemas:
+the pipeline writes to it, with no lock to wait for. Connect with plain
+`DBI::dbConnect()` (see `vignette("getting-started")`) and it attaches
+under the alias `alchemer`, with three schemas:
 
 | Schema | What it's for | Written by |
 |---|---|---|
@@ -74,8 +75,7 @@ There's no separate versioned layer — DuckLake versions every write. Query the
 database as it stood at a past time or version:
 
 ```{r}
-con <- alchemer_db(read_only = TRUE)
-
+# con from vignette("getting-started")
 DBI::dbGetQuery(con, "
   SELECT * FROM alchemer.raw.responses AT (TIMESTAMP => '2026-01-01 00:00:00')")
 DBI::dbGetQuery(con, "SELECT * FROM ducklake_snapshots('alchemer')") # every commit

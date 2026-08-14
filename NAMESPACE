@@ -3,7 +3,6 @@
 S3method(print,alchemer_client)
 export(alchemer_campaigns)
 export(alchemer_client)
-export(alchemer_db)
 export(alchemer_questions)
 export(alchemer_responses)
 export(alchemer_statistics)

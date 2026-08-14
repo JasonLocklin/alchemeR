@@ -201,8 +201,7 @@ pub_layer(db, surveys, language, wide_views, tz)
 load_pub_layer(dest_con, db, tables, schema)
 load_pipeline_health(dest_con, db, table, schema)
 
-# Reading
-alchemer_db(db, read_only)      # DBI connection, extensions loaded, catalog attached
+# Reading (connect yourself with DBI::dbConnect() -- ADR-016; con is yours)
 alchemer_tbl(con, "pub.responses")
 survey_wide(con, survey_id)
 
@@ -550,6 +549,37 @@ extension cannot do it: it accepts `VACUUM` without rebuilding the file, and its
 
 **If you touch this function, re-run the byte-level test.** The guarantee is worthless
 unless something checks the actual bytes.
+
+## ADR-016 — There is no exported `connect()` helper
+
+**Date: 2026-08-14.**
+
+**Decision.** `alchemer_db()` (the internal function that installs/loads extensions,
+attaches the DuckLake catalog, and asserts its spec version) is no longer exported.
+Pipeline functions (`ingest()`, `pub_layer()`, `db_check()`, ...) still call it
+internally to get their own `con` from a `db` path. An analyst who wants a `con` opens
+one with plain `DBI::dbConnect(duckdb::duckdb())` plus the `INSTALL`/`LOAD`/`ATTACH`
+calls, documented in `vignette("getting-started")`.
+
+**Why.** Two reasons, not one.
+
+- RStudio's Connections pane registers a database connection by recognizing a
+  `dbConnect()` call it can see at the console/script top level. A `dbConnect()` buried
+  inside a package helper is invisible to it, so `alchemer_db()` silently cost every
+  analyst the ability to browse `alchemer`'s schemas and tables in the pane -- exactly
+  the audience `alchemer_tbl()` and `survey_wide()` exist for.
+- The ATTACH mechanics (which extensions, which alias, `DATA_PATH`) are not a secret
+  worth hiding behind a function name. Showing them is what makes it obvious what a
+  "connection to the application database" actually is: an ordinary DuckDB connection
+  with a DuckLake catalog attached, nothing more.
+
+**Consequences.** One extra few-line snippet for analysts to paste (or source) once
+per session, instead of one function call. Every doc example that opened a `con` now
+shows the real `dbConnect()`/`ATTACH` sequence instead of hiding it. The legacy-catalog
+check, version assertion, and schema creation in `alchemer_db()` still run for every
+pipeline function's own connection; an analyst's manual connection skips them and gets
+DuckDB's own error messages instead -- an accepted trade for a connection RStudio can
+see.
 
 ---
 

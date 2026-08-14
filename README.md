@@ -63,7 +63,16 @@ pub_layer()   # tidy typed tables + a wide view per survey
 ```
 
 ``` r
-con <- alchemer_db(read_only = TRUE)
+db <- alchemer_db_path()
+con <- DBI::dbConnect(duckdb::duckdb())
+for (ext in c("json", "sqlite", "ducklake", "icu")) {
+  DBI::dbExecute(con, paste("INSTALL", ext))
+  DBI::dbExecute(con, paste("LOAD", ext))
+}
+DBI::dbExecute(con, glue::glue(
+  "ATTACH 'ducklake:sqlite:{db}/catalog.sqlite' AS alchemer ",
+  "(DATA_PATH '{db}/data/', READ_ONLY)"
+))
 
 # one row per response x question, ready for dplyr
 alchemer_tbl(con, "pub.answers") |> dplyr::collect()
@@ -73,6 +82,10 @@ survey_wide(con, "8611799")
 
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
+
+`vignette("getting-started")` explains why this is a plain `dbConnect()`
+rather than a package helper — it’s what lets RStudio’s Connections pane
+pick up the database.
 
 ## Load into an analytics database
 

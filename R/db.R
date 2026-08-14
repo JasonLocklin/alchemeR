@@ -58,23 +58,31 @@ install_and_load <- function(con, extension) {
   DBI::dbExecute(con, glue::glue("LOAD {extension}"))
 }
 
-#' Open (or create) the alchemeR application database
-#'
-#' Attaches the DuckLake catalog at `db` as `alchemer`, asserting that its
-#' stamped spec version is at least 1.0 (ADR-001) -- an older `duckdb` build
-#' writes the pre-release 0.3 spec silently, and this refuses to write to (or
-#' misread) one. `raw`/`meta`/`pub` schemas and tables are created on first
-#' connect and are safe to re-run.
-#'
-#' Any number of processes may attach at once, readers and writers alike, so
-#' an analyst querying the database never blocks a scheduled `ingest()` and is
-#' never blocked by one.
-#'
-#' @param db Application database directory. Defaults to [alchemer_db_path()].
-#' @param read_only Attach without creating directories or schema, and without
-#'   permission to write -- for analysts who only ever query.
-#' @return A `DBI` connection with the catalog attached as `alchemer`.
-#' @export
+# Open (or create) the alchemeR application database.
+#
+# Internal only (ADR-016): every exported pipeline function (ingest(),
+# pub_layer(), db_check(), ...) takes a `db` path and opens its own
+# connection through here, but this is deliberately not exported. An analyst
+# who wants a `con` to query connects directly with DBI::dbConnect() -- see
+# vignette("getting-started") -- both so the ATTACH mechanics aren't hidden
+# behind a package function, and because RStudio's Connections pane only
+# picks up a dbConnect() call it can see at the top level, not one buried
+# inside a helper.
+#
+# Attaches the DuckLake catalog at `db` as `alchemer`, asserting that its
+# stamped spec version is at least 1.0 (ADR-001) -- an older `duckdb` build
+# writes the pre-release 0.3 spec silently, and this refuses to write to (or
+# misread) one. `raw`/`meta`/`pub` schemas and tables are created on first
+# connect and are safe to re-run.
+#
+# Any number of processes may attach at once, readers and writers alike, so
+# an analyst querying the database never blocks a scheduled ingest() and is
+# never blocked by one.
+#
+# @param db Application database directory. Defaults to alchemer_db_path().
+# @param read_only Attach without creating directories or schema, and
+#   without permission to write.
+# @return A DBI connection with the catalog attached as `alchemer`.
 alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE) {
   db <- normalizePath(db, mustWork = FALSE)
   data_dir <- file.path(db, "data")
@@ -178,7 +186,8 @@ assert_ducklake_version <- function(con, catalog_path) {
 
 #' A dbplyr handle onto an application database table
 #'
-#' @param con A connection from [alchemer_db()].
+#' @param con A `DBI` connection with the catalog attached as `alchemer` --
+#'   see `vignette("getting-started")` for how to open one.
 #' @param table Schema-qualified table name, e.g. `"raw.responses"`.
 #' @return A `tbl` for use with dplyr verbs.
 #' @export

@@ -69,13 +69,40 @@ pub_layer()   # tidy typed tables + a wide view per survey
 Later `ingest()` calls only refresh surveys that actually changed, so it is
 safe to run on a schedule — see `vignette("scheduling")`.
 
+## Connecting
+
+alchemeR has no `connect()` helper — you open the connection yourself with
+plain `DBI::dbConnect()`, the same as you would for any other database:
+
+```{r}
+db <- alchemer_db_path()  # or wherever ALCHEMER_DB points
+
+con <- DBI::dbConnect(duckdb::duckdb())
+for (ext in c("json", "sqlite", "ducklake", "icu")) {
+  DBI::dbExecute(con, paste("INSTALL", ext))
+  DBI::dbExecute(con, paste("LOAD", ext))
+}
+DBI::dbExecute(con, glue::glue(
+  "ATTACH 'ducklake:sqlite:{db}/catalog.sqlite' AS alchemer ",
+  "(DATA_PATH '{db}/data/', READ_ONLY)"
+))
+```
+
+Drop `READ_ONLY` if you need to write (the pipeline functions do this for
+you). Typing the real `dbConnect()`/`ATTACH` calls, instead of hiding them
+behind a package function, is deliberate: it's what lets RStudio's
+Connections pane pick up the connection and let you browse `alchemer`'s
+schemas and tables, which it can't do for a connection opened inside
+someone else's helper function.
+
+You can query the database while a scheduled `ingest()` is running — a
+`READ_ONLY` attach never blocks a writer, or is blocked by one.
+
 ## Using the data
 
 `pub` is ordinary tidy data. Use dplyr against it, or pull it into memory:
 
 ```{r}
-con <- alchemer_db(read_only = TRUE)
-
 # one row per response x question
 alchemer_tbl(con, "pub.answers") |>
   dplyr::filter(!is_deleted, !is.na(answer)) |>
@@ -86,9 +113,6 @@ survey_wide(con, "YOUR_SURVEY_ID")
 
 DBI::dbDisconnect(con, shutdown = TRUE)
 ```
-
-Use `read_only = TRUE` whenever you are only reading. You can query the
-database while a scheduled `ingest()` is running — neither blocks the other.
 
 `survey_wide()` computes the wide shape on demand, straight from `raw` — handy
 for a survey you haven't run `pub_layer()` on yet.
