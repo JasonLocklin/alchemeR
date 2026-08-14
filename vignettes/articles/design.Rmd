@@ -202,6 +202,7 @@ load_pub_layer(dest_con, db, tables, schema)
 load_pipeline_health(dest_con, db, table, schema)
 
 # Reading (connect yourself with DBI::dbConnect() -- ADR-016; con is yours)
+alchemer_db_path(db)      # resolves ALCHEMER_DB, same error every pipeline function gives
 dplyr::tbl(con, dbplyr::in_schema("pub", "responses"))  # or DBI::dbGetQuery(con, "...")
 survey_wide(con, survey_id)
 
@@ -591,7 +592,10 @@ check, version assertion, and schema creation in `alchemer_db()` still run for e
 pipeline function's own connection; an analyst's manual connection skips them and gets
 DuckDB's own error messages instead -- an accepted trade for a connection RStudio can see.
 `dbplyr` drops from `Imports` to nothing at all: nothing in the package's own code calls
-into it anymore.
+into it anymore. `alchemer_db_path()` -- which resolves `ALCHEMER_DB`, with the same
+actionable error every pipeline function already gives when it's unset -- is now exported
+for exactly this: the connect snippet's first line uses it, and a copy-pasted example
+that calls an internal function is worse than the thing this ADR set out to fix.
 
 ---
 

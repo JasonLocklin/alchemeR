@@ -12,9 +12,15 @@ that keeps it — and optionally your analytics database — current.
   and `vignette("getting-started")`.
 * The database can be read while the pipeline writes to it, so an analyst's
   session never blocks a scheduled run and is never blocked by one.
-* `pub_layer()` builds tidy, typed, language-resolved tables from `raw`, plus a
-  one-row-per-respondent view per survey. `survey_wide()` computes that shape on
-  demand.
+* `pub_layer()` builds tidy, typed, language-resolved tables from `raw`.
+  `survey_wide()` computes the one-row-per-respondent shape on demand for any
+  survey. For everything else, query the database directly over a plain
+  `DBI::dbConnect()` connection you open yourself, using the exported
+  `alchemer_db_path()` to find `ALCHEMER_DB` (see
+  `vignette("getting-started")`) — there is no `alchemer_db()` connect helper
+  or `alchemer_tbl()` query helper, so the ATTACH mechanics aren't hidden,
+  RStudio's Connections pane can still see the connection, and reading is
+  just SQL or stock `dbplyr::in_schema()` (ADR-016).
 * `load_pub_layer()` and `load_pipeline_health()` complete the pipeline by
   copying the publication layer, and a monitorable status row, into an external
   analytics database over a plain `DBI` connection — SQL Server via `odbc`, or
@@ -22,13 +28,6 @@ that keeps it — and optionally your analytics database — current.
   `vignette("scheduling")`.
 * Maintenance: `db_status()`, `db_check()`, `compact()`, `expire_history()`, and
   `expunge()` (which removes data *and* its history, for retention obligations).
-* `survey_wide()` computes the wide shape on demand for any survey. For
-  everything else, query the database directly over a plain
-  `DBI::dbConnect()` connection you open yourself (see
-  `vignette("getting-started")`) — there is no `alchemer_db()` connect helper
-  or `alchemer_tbl()` query helper, so the ATTACH mechanics aren't hidden,
-  RStudio's Connections pane can still see the connection, and reading is
-  just SQL or stock `dbplyr::in_schema()` (ADR-016).
 
 ## Configuration
 
