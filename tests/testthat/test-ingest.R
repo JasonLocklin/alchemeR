@@ -690,3 +690,86 @@ test_that("a failed survey is retried on the next run, not silently parked", {
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
   expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 2)
 })
+
+test_that("a survey whose fields arrive as arrays ingests instead of failing", {
+  # Regression test: `team` on a survey shared across two teams, and any other
+  # field Alchemer returns with varying arity, reached purrr::map_chr() as a
+  # length-2 vector and aborted that survey's refresh -- "Result must be length
+  # 1, not 2" -- on every run, for as long as the survey stayed shared. Only a
+  # handful of surveys in an account are affected, which is exactly what made
+  # it look like something wrong with those surveys rather than with parsing.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(
+    mock_survey("1"),
+    modifyList(mock_survey("2"), list(team = list("10", "11")))
+  )
+  state$responses <- list(
+    "1" = list(mock_response("r1")),
+    "2" = list(modifyList(mock_response("r2"), list(link_id = list("1", "2"))))
+  )
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client())
+
+  expect_equal(out$status, c("ok", "ok"))
+  expect_equal(nrow(ingest_failures(dir)), 0)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  teams <- DBI::dbGetQuery(con, "SELECT survey_id, team FROM alchemer.raw.surveys ORDER BY survey_id")
+  expect_equal(teams$team, c("1", '["10","11"]'))
+  links <- DBI::dbGetQuery(con, "SELECT link_id FROM alchemer.raw.responses WHERE survey_id = '2'")
+  expect_equal(links$link_id, '["1","2"]')
+})
+
+test_that("flatten_message turns a bulleted, multi-line error into one readable line", {
+  # meta.run_events.message and ingest()'s `message` column are read in a
+  # tibble cell and a log file, neither of which renders cli's multi-line
+  # layout -- it arrives garbled, with the actual sentence truncated away
+  # behind the decoration. Every word has to survive; only the layout goes.
+  msg <- flatten_message("Problem while fetching.\nℹ In index: 1.\nCaused by error:\n! Result must be length 1, not 2.")
+  expect_equal(
+    msg,
+    "Problem while fetching. In index: 1. Caused by error: Result must be length 1, not 2."
+  )
+  expect_false(grepl("\n", msg, fixed = TRUE))
+
+  # A line of real prose that happens to start with a bullet-shaped word is
+  # left alone.
+  expect_equal(flatten_message("integrity check(s) failed: x"), "integrity check(s) failed: x")
+  expect_equal(flatten_message("single line"), "single line")
+})
+
+test_that("a failure's message reaches meta.run_events as one line", {
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+
+  broken_router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/survey/1$", parsed$path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 500, message = "Something went wrong"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(broken_router)
+  out <- suppressWarnings(ingest(db = dir, client = ingest_test_client()))
+
+  expect_equal(out$status, "error")
+  expect_false(grepl("\n", out$message, fixed = TRUE))
+  # The API's own message and code survive the flattening.
+  expect_match(out$message, "Something went wrong")
+  expect_match(out$message, "500")
+  expect_equal(out$http_status, 500L)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  logged <- DBI::dbGetQuery(
+    con, "SELECT message FROM alchemer.meta.run_events WHERE status = 'error' AND phase = 'refresh'"
+  )
+  expect_false(any(grepl("\n", logged$message, fixed = TRUE)))
+})

@@ -154,3 +154,79 @@ test_that("parse_campaigns keeps the full item verbatim in payload", {
   expect_equal(out$campaign_id, "300865")
   expect_equal(jsonlite::fromJSON(out$payload)$name, "Default Link")
 })
+
+# --- chr1 ------------------------------------------------------------------------
+
+test_that("chr1 returns exactly one string whatever shape the field arrives in", {
+  # Regression test: chr1() was a bare as.character(), which assumed every
+  # field Alchemer documents as a scalar always arrives as one. It does not.
+  # purrr::map_chr() then aborted the whole survey's refresh with "Result must
+  # be length 1, not 2" -- a hard ingest failure caused purely by field shape.
+  expect_equal(chr1("8611799"), "8611799")
+  expect_equal(chr1(6), "6")
+  expect_equal(chr1(TRUE), "TRUE")
+
+  # Absent, null, and empty all mean "nothing to record".
+  expect_true(is.na(chr1(NULL)))
+  expect_true(is.na(chr1(list())))
+  expect_true(is.na(chr1(character(0))))
+
+  # An array where a scalar was expected: kept as JSON, not flattened into two
+  # values and not dropped.
+  expect_equal(chr1(list("1", "2")), '["1","2"]')
+  expect_equal(chr1(c("1", "2")), '["1","2"]')
+
+  # An object where a scalar was expected. This is the case that did not
+  # error: as.character() deparsed it, and `raw` archived an R expression.
+  expect_equal(chr1(list(id = "1", name = "Research")), '{"id":"1","name":"Research"}')
+  expect_false(grepl("list(", chr1(list(id = "1", name = "Research")), fixed = TRUE))
+
+  # Whatever the shape, the contract is one string.
+  shapes <- list(
+    "a", 1L, list("a", "b"), list(id = "1"), list(list(id = "1"), list(id = "2")), NULL, list()
+  )
+  expect_true(all(vapply(shapes, function(x) length(chr1(x)), integer(1)) == 1L))
+})
+
+test_that("parse_surveys survives a survey shared across two teams", {
+  # `team` is a single id on most surveys and an array on a survey shared
+  # between teams -- documented as a scalar on the list endpoint and as an
+  # array of {id, name} on the detail endpoint. Either must ingest.
+  items <- list(
+    list(id = "1", title = "One", type = "Standard Survey", status = "Launched",
+         created_on = "2026-01-01 00:00:00", modified_on = "2026-01-01 00:00:00",
+         team = "1"),
+    list(id = "2", title = "Two", type = "Standard Survey", status = "Launched",
+         created_on = "2026-01-01 00:00:00", modified_on = "2026-01-01 00:00:00",
+         team = list("1", "2"))
+  )
+  out <- parse_surveys(items)
+  expect_equal(nrow(out), 2)
+  expect_equal(out$team, c("1", '["1","2"]'))
+  # And the verbatim copy still holds both ids.
+  expect_equal(jsonlite::fromJSON(out$payload[2])$team, c("1", "2"))
+})
+
+test_that("parse_responses survives an array where a scalar field is expected", {
+  items <- list(
+    mock_response("r1"),
+    modifyList(mock_response("r2"), list(language = list("English", "French")))
+  )
+  out <- parse_responses("1", items)
+  expect_equal(nrow(out), 2)
+  expect_equal(out$language, c("English", '["English","French"]'))
+})
+
+test_that("parse_survey_definition keeps a structured value out of a scalar column", {
+  def <- list(id = "1", pages = list(list(
+    id = "1", description = "", questions = list(list(
+      id = "2", base_type = "Question", type = "TEXTBOX",
+      # Alchemer returns shortname as a string; a survey that returns a
+      # structure here must not deparse into raw as "list(...)".
+      shortname = list(en = "First name"),
+      options = list()
+    ))
+  )))
+  out <- parse_survey_definition("1", def)
+  expect_equal(out$questions$shortname, '{"en":"First name"}')
+})

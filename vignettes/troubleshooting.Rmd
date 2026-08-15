@@ -133,6 +133,19 @@ A message that looks like neither an API error nor an assertion is a bug in the
 package or a database-level problem. `meta.run_events.message` has the full
 text; that is what to include in an issue.
 
+The shape to recognise is a message that names R machinery rather than
+Alchemer — `Result must be length 1, not 2`, `Tibble columns must have
+compatible sizes`, `subscript out of bounds`. That is a *parse* failure: the
+API answered, and the package could not read the answer. Its signature is a
+small, fixed set of surveys failing on every run while the rest of the account
+is fine, because it is a property of what those surveys contain, not of the
+network or the credentials.
+
+Parsing is meant to be incapable of this — `raw` stores every field as text or
+JSON precisely so an unfamiliar shape becomes a value rather than an error
+(ADR-003). So a parse failure is always a bug worth reporting, and the survey
+id plus the message is enough to fix it.
+
 ## Whole-account failures
 
 If **every** survey is failing rather than two, stop reading per-survey detail —

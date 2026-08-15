@@ -83,6 +83,20 @@ All settings come from the environment; see
   If you are upgrading with surveys already parked this way, refresh them once
   explicitly — `ingest(surveys = c("123", "456"))` always refreshes, regardless
   of change detection — or run `ingest(force = TRUE)` once.
+* **A field that arrives as an array no longer fails the survey.** Alchemer
+  varies the arity of fields it documents as scalars — `team` is one id on most
+  surveys and an array on a survey shared across teams, and it is not the only
+  one. Such a value reached `purrr::map_chr()` as a length-2 vector and aborted
+  that survey's whole refresh with `Result must be length 1, not 2`, on every
+  run, for as long as the survey stayed that way. It now lands in `raw` as JSON
+  (`["10","11"]`), which `raw` is for. The same fix closes a silent one: a
+  length-1 *object* in a scalar column did not error — it was `as.character()`d
+  into an R deparse and archived as `list(id = "1", name = "Research")`.
+  Re-ingest any affected survey to replace those values.
+* Failure messages are stored and displayed as a single line. An rlang/cli error
+  is a multi-line, glyph-bulleted block, which arrived garbled in a tibble cell
+  or a log file — with the actual sentence lost behind the decoration. The
+  wording is unchanged, only the layout.
 * `alchemer_responses()` and the other direct-API functions honour a
   `resultsperpage` passed through `...`. It was documented but silently reset
   to 500, which made a smaller page size impossible to ask for — the one knob

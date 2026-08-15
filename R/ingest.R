@@ -159,6 +159,28 @@ error_status_code <- function(e) {
   suppressWarnings(as.integer(status %||% NA_integer_))
 }
 
+# Every place a failure's text is shown -- meta.run_events.message, ingest()'s
+# returned `message` column, the end-of-run warning -- is a place that renders
+# one line: a tibble cell, a cron job's log file, a SQL client. An rlang or cli
+# error is not one line. It arrives as a multi-line, glyph-bulleted block
+# ("i In index: 1.\nCaused by error:\n! Result must be length 1, not 2."), and
+# once that has been squeezed into a tibble cell what the reader gets is
+# garbled -- the actual sentence truncated away behind the decoration.
+#
+# So flatten it here: drop the bullet glyphs, which only mean anything in the
+# console they were formatted for, and join the lines. Every word survives;
+# only the layout goes.
+flatten_message <- function(x) {
+  lines <- unlist(strsplit(as.character(x), "\n", fixed = TRUE))
+  # cli's unicode bullets, plus the ASCII fallbacks it uses when the console
+  # cannot render them. Anchored and space-terminated so a line of real text
+  # that merely starts with "x" or "!" is left alone.
+  glyphs <- "\u2139|\u2716|\u2714|\u2022|\u00d7|i|x|!|\\*|\\+"
+  lines <- sub(paste0("^\\s*(", glyphs, ")\\s+"), "", lines)
+  lines <- trimws(lines)
+  paste(lines[nzchar(lines)], collapse = " ")
+}
+
 log_event <- function(con, run_id, survey_id, phase, status, http_status = NA_integer_,
                       message = NA_character_, started_at = Sys.time(), finished_at = Sys.time(),
                       n_responses = NA_integer_) {
@@ -257,7 +279,10 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
     # the failing check names all survive into meta.run_events.message. The
     # status code is the one part that does not, so it is pulled out here.
     error = function(e) {
-      list(status = "error", message = conditionMessage(e), http_status = error_status_code(e))
+      list(
+        status = "error", message = flatten_message(conditionMessage(e)),
+        http_status = error_status_code(e)
+      )
     }
   )
 
@@ -381,7 +406,7 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
         log_event(
           con, run_id, survey_id, "probe", "error",
           http_status = error_status_code(probed$error),
-          message = conditionMessage(probed$error),
+          message = flatten_message(conditionMessage(probed$error)),
           started_at = t0, finished_at = Sys.time()
         )
       }
@@ -411,7 +436,7 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
       refresh_survey(con, client, survey_id, run_id, include, modified_on, probe_or_unknown),
       error = function(e) {
         list(
-          status = "error", message = conditionMessage(e),
+          status = "error", message = flatten_message(conditionMessage(e)),
           http_status = error_status_code(e), n_fetched = NA_integer_
         )
       }
