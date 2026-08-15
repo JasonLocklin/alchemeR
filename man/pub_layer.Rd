@@ -7,9 +7,7 @@
 pub_layer(
   db = alchemer_db_path(),
   surveys = NULL,
-  language = "English",
   wide_views = TRUE,
-  tz = NULL,
   force = FALSE
 )
 }
@@ -20,18 +18,7 @@ pub_layer(
 is rebuilt whether or not it has changed. Otherwise every survey in
 \code{raw.surveys} is considered and the changed ones are rebuilt.}
 
-\item{language}{Which title language to resolve multilingual fields to.
-Letters, digits, spaces, and \code{-}/\verb{_} only (Alchemer language names are
-always simple words, e.g. \code{"English"}) -- title_sql() interpolates this
-directly into a generated SQL/JSONPath expression with no further
-escaping, so it is validated up front rather than quoted in context.}
-
 \item{wide_views}{Whether to (re)generate the per-survey wide views.}
-
-\item{tz}{Timezone for every \code{pub} timestamp. Defaults to \code{ALCHEMER_TZ},
-then the machine's own timezone (see \code{\link[=alchemer_tz]{alchemer_tz()}}). Set \code{ALCHEMER_TZ}
-explicitly for scheduled runs so the values written don't depend on
-which machine ran them.}
 
 \item{force}{Rebuild every survey considered, skipping change detection.
 For rebuilding after something outside this function has touched \code{pub}.}
@@ -69,6 +56,16 @@ survey-level fields carry no suffix and are already in the account's own
 local time, so they are cast unchanged. \code{raw} is never converted at all.
 See \code{vignette("data-model")}.
 }
+\section{Configuration}{
+
+The timezone and the title language come from the environment and cannot be
+passed here (ADR-019): \code{ALCHEMER_TZ} and \code{ALCHEMER_LANGUAGE}. Changing
+either makes the next run rebuild every survey, since both change the values
+written from identical input. Set \code{ALCHEMER_TZ} explicitly for a scheduled
+run — unset, it falls back to the machine's own timezone, so a laptop and a
+UTC server would write different values into one database.
+}
+
 \seealso{
 \code{\link[=ingest]{ingest()}}, which fills the \code{raw} layer this is built from.
 }

@@ -244,24 +244,25 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
 #'   `"campaigns"` and `"statistics"`, both on by default. Contacts (heavy
 #'   PII, ADR-009) are account-level rather than per-survey and are not
 #'   fetched by `ingest()` at all yet.
-#' @param full_sweep_days Maximum days since a survey's last successful
-#'   refresh before it is refreshed regardless of change detection --
-#'   a correctness backstop, not a freshness setting (ADR-004).
-#' @param rpm Request-per-minute throttle ceiling, passed to [alchemer_client()]
-#'   when `client` is not supplied directly.
 #' @param dry_run If `TRUE`, make the same decisions and requests but write no
 #'   data. The database directory and its empty tables are still created if
 #'   they don't exist yet, so a dry run against a fresh `ALCHEMER_DB` leaves a
 #'   valid, empty database behind.
 #' @param client An `alchemer_client`. Defaults to one built from the
 #'   environment; tests pass a fixture-backed client (ADR-010).
+#' @section Configuration:
+#' Credentials, the API domain, the request throttle, and the staleness
+#' backstop all come from the environment and cannot be passed here (ADR-019):
+#' `ALCHEMER_API_TOKEN`, `ALCHEMER_API_SECRET`, `ALCHEMER_DOMAIN`,
+#' `ALCHEMER_RPM`, and `ALCHEMER_FULL_SWEEP_DAYS`. See
+#' `vignette("getting-started")`.
 #' @return Invisibly, a tibble with one row per survey considered: decision,
 #'   counts, timings, and status.
 #' @export
 ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
                    include = c("campaigns", "statistics"),
-                   full_sweep_days = alchemer_full_sweep_days(), rpm = alchemer_rpm(),
-                   dry_run = FALSE, client = alchemer_client(rpm = rpm)) {
+                   dry_run = FALSE, client = alchemer_client()) {
+  full_sweep_days <- alchemer_full_sweep_days()
   run_id <- new_run_id()
   run_started_at <- Sys.time()
   con <- alchemer_db(db)

@@ -19,5 +19,5 @@ fixture_response <- function(name, status_code = 200) {
 }
 
 test_client <- function() {
-  alchemer_client(token = "TOKEN", secret = "SECRET", domain = "api.alchemer.com", rpm = 100)
+  new_alchemer_client("TOKEN", "SECRET", domain = "api.alchemer.com", rpm = 100)
 }

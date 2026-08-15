@@ -4,10 +4,7 @@
 \alias{alchemer_full_sweep_days}
 \title{Maximum staleness backstop for survey refresh}
 \usage{
-alchemer_full_sweep_days(days = NULL)
-}
-\arguments{
-\item{days}{Override. Defaults to \code{Sys.getenv("ALCHEMER_FULL_SWEEP_DAYS")}.}
+alchemer_full_sweep_days()
 }
 \value{
 A single number.

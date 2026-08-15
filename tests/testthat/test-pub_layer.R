@@ -75,7 +75,8 @@ test_that("date_submitted/date_started parse their EST/EDT suffix into the confi
     ('1', 'summer', '2026-07-15 14:30:00 EDT', '2026-07-15 14:25:00 EDT', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir, tz = "America/Toronto")
+  withr::local_envvar(ALCHEMER_TZ = "America/Toronto")
+  pub_layer(dir)
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -98,7 +99,8 @@ test_that("a non-Eastern tz renders the same instant in that zone", {
     ('1', 'r1', '2026-01-15 14:30:00 EST', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir, tz = "UTC")
+  withr::local_envvar(ALCHEMER_TZ = "UTC")
+  pub_layer(dir)
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -124,7 +126,8 @@ test_that("date_updated/created_on/modified_on are kept as the account-local tim
     ('1', 'r1', '2026-01-15 18:59:50 EST', '2026-01-15 18:59:57 EST', '2026-01-15 19:00:00', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir, tz = "America/Toronto")
+  withr::local_envvar(ALCHEMER_TZ = "America/Toronto")
+  pub_layer(dir)
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -151,7 +154,8 @@ test_that("raw timestamps stay exactly as Alchemer sent them, whatever tz is use
     ('1', 'r1', '2026-01-15 14:30:00 EST', '2026-01-15 14:30:05', FALSE)")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  pub_layer(dir, tz = "Australia/Sydney")
+  withr::local_envvar(ALCHEMER_TZ = "Australia/Sydney")
+  pub_layer(dir)
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
@@ -162,7 +166,8 @@ test_that("raw timestamps stay exactly as Alchemer sent them, whatever tz is use
 
 test_that("pub_layer() rejects a timezone that isn't an IANA name", {
   dir <- withr::local_tempdir()
-  expect_error(pub_layer(dir, tz = "Eastern"), class = "alchemeR_config_error")
+  withr::local_envvar(ALCHEMER_TZ = "Eastern")
+  expect_error(pub_layer(dir), class = "alchemeR_config_error")
 })
 
 test_that("INSERT ... BY NAME rejects a column-name mismatch instead of silently misrouting", {
@@ -188,16 +193,20 @@ test_that("INSERT ... BY NAME rejects a column-name mismatch instead of silently
   expect_match(conditionMessage(err), "ttile|column")
 })
 
-test_that("pub_layer(language =) rejects a value that could break the generated SQL", {
-  # Regression test (ultrareview): title_sql() interpolated `language`
-  # directly into a SQL/JSONPath string with no escaping.
+test_that("pub_layer() rejects a language that could break the generated SQL", {
+  # Regression test (ultrareview): title_sql() interpolated the language
+  # directly into a SQL/JSONPath string with no escaping. It is validated at
+  # the point it is read now (ALCHEMER_LANGUAGE), but the property worth
+  # testing is unchanged: a value like this must never reach the query.
   dir <- withr::local_tempdir()
   con <- alchemer_db(dir)
   seed_survey(con)
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  expect_error(pub_layer(dir, language = "English\") --"), class = "alchemeR_config_error")
-  expect_error(pub_layer(dir, language = "en'glish"), class = "alchemeR_config_error")
+  withr::local_envvar(ALCHEMER_LANGUAGE = "English\") --")
+  expect_error(pub_layer(dir), class = "alchemeR_config_error")
+  withr::local_envvar(ALCHEMER_LANGUAGE = "en'glish")
+  expect_error(pub_layer(dir), class = "alchemeR_config_error")
 })
 
 test_that("a survey_id containing a quote character doesn't break wide-view management", {
@@ -521,9 +530,11 @@ test_that("pub_layer() rebuilds when tz changes, so pub can't hold two timezones
   con <- alchemer_db(dir)
   seed_survey(con)
   DBI::dbDisconnect(con, shutdown = TRUE)
-  pub_layer(dir, tz = "America/Toronto")
+  withr::local_envvar(ALCHEMER_TZ = "America/Toronto")
+  pub_layer(dir)
 
-  expect_equal(pub_layer(dir, tz = "UTC"), "1")
+  withr::local_envvar(ALCHEMER_TZ = "UTC")
+  expect_equal(pub_layer(dir), "1")
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))

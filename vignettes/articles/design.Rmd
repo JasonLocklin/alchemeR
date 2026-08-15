@@ -723,6 +723,59 @@ says the pub layer changed, and it invalidates structure as well as content.
 - A database stamped under the pre-split single `version N` reads as major 1, minor N —
   every version stamped under that scheme was a publication-layer change.
 
+## ADR-019 — Configuration comes from the environment, and from nowhere else
+
+**Date: 2026-08-15.**
+
+**Decision.** Every setting is read from an `ALCHEMER_*` environment variable, at the point
+it is used, and **no function accepts it as an argument**. `alchemer_client()` takes no
+arguments at all. `ingest()` lost `full_sweep_days` and `rpm`; `pub_layer()` lost `tz` and
+`language`; `expunge()` lost `tz`; every reader in `config.R` lost its override parameter.
+`language` gains a variable it never had, `ALCHEMER_LANGUAGE`, so that the rule has no
+exceptions.
+
+**Why.** A setting that can arrive two ways has to be traced two ways. With one source,
+"why did this run behave differently?" is always answered by the environment it ran in —
+which is also the only thing a cron entry, a container, and an interactive session
+genuinely share. The arguments were never pulling their weight: they existed so that a
+`keyring` user could inject a secret without writing it to source, and
+
+```r
+Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))
+```
+
+does that in one line, for any vault, without the package knowing that vaults exist.
+
+**What stays an argument, and why it isn't an exception.**
+
+- `db`. It is the *operand* — which database this call acts on — not a setting, and it
+  still defaults to `alchemer_db_path()`. Every test would otherwise have to mutate global
+  environment state to point at a temp directory.
+- `client` on `ingest()`. The injection point ADR-010 requires for testing without
+  credentials.
+- `surveys`, `force`, `wide_views`, `include`, `dry_run`. What this call should do, not how
+  the deployment is configured.
+- `dest_con`, `schema`, `tables` on the load functions. The destination connection is the
+  caller's to build — the package never opens it — so its schema belongs beside it. The
+  boundary is: alchemeR's own configuration is environmental; the analytics database is the
+  script's business, and the example script reads *its* settings from the environment too.
+- `token`/`secret_key` on the three deprecated shims. A deprecated function exists so that
+  calls written against the old API keep working, and the old API took credentials. They
+  fall back to the environment when unsupplied, and they go away in 2.0.0 with the shims.
+
+**Consequences and traps.**
+
+- Validation moves to the reader. `ALCHEMER_TZ` is checked against `OlsonNames()` and
+  `ALCHEMER_LANGUAGE` against a character allowlist *where they are read*, which is
+  strictly better than validating an argument at each call site: both reach generated SQL
+  as bare literals (ADR-014, ADR-008), and there is now exactly one place either can enter.
+- Tests configure the way production does, with `withr::local_envvar()`. A test that passed
+  `tz = "UTC"` was quietly exercising a path no scheduled run ever took.
+- `new_alchemer_client()` is the unexported constructor with everything passed explicitly.
+  It is not a back door into the configuration story: it exists for the two callers that
+  legitimately hold credentials rather than read them — the deprecated shims, and fixtures
+  whose credentials were never real.
+
 ---
 
 # 5. Why DuckLake, and not Iceberg

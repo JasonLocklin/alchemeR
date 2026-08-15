@@ -4,12 +4,7 @@
 \alias{expunge}
 \title{Permanently remove research data and its history}
 \usage{
-expunge(
-  db = alchemer_db_path(),
-  survey_id = NULL,
-  before_date = NULL,
-  tz = NULL
-)
+expunge(db = alchemer_db_path(), survey_id = NULL, before_date = NULL)
 }
 \arguments{
 \item{db}{Application database directory. Defaults to \code{\link[=alchemer_db_path]{alchemer_db_path()}}.}
@@ -19,12 +14,9 @@ its \code{raw.surveys} record) is removed.}
 
 \item{before_date}{If supplied, \code{raw.responses} rows with
 \code{date_submitted} earlier than this are removed, across every survey.
-Interpreted as a calendar date in \code{tz} (midnight local time);
+Interpreted as a calendar date in \code{ALCHEMER_TZ} (midnight local time);
 \code{date_submitted} itself is parsed using its own per-row EST/EDT suffix,
 so the comparison is DST-correct without guessing at a fixed offset.}
-
-\item{tz}{Timezone \code{before_date} is read in. Defaults to \code{ALCHEMER_TZ},
-then the machine's own timezone (see \code{\link[=alchemer_tz]{alchemer_tz()}}).}
 }
 \value{
 Invisibly, \code{TRUE}.

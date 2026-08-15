@@ -160,11 +160,9 @@ cleanup_files <- function(con) {
 #'   its `raw.surveys` record) is removed.
 #' @param before_date If supplied, `raw.responses` rows with
 #'   `date_submitted` earlier than this are removed, across every survey.
-#'   Interpreted as a calendar date in `tz` (midnight local time);
+#'   Interpreted as a calendar date in `ALCHEMER_TZ` (midnight local time);
 #'   `date_submitted` itself is parsed using its own per-row EST/EDT suffix,
 #'   so the comparison is DST-correct without guessing at a fixed offset.
-#' @param tz Timezone `before_date` is read in. Defaults to `ALCHEMER_TZ`,
-#'   then the machine's own timezone (see [alchemer_tz()]).
 #' @details
 #' Removing the rows is only the first of four steps, because a `DELETE` alone
 #' leaves the values recoverable from disk in three separate places. Each was
@@ -195,9 +193,8 @@ cleanup_files <- function(con) {
 #' its `sqlite_query()` pass-through rejects statements that return no rows).
 #' @return Invisibly, `TRUE`.
 #' @export
-expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL,
-                    tz = NULL) {
-  tz <- alchemer_tz(tz) # validated even when supplied: it reaches SQL as a literal
+expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL) {
+  tz <- alchemer_tz() # validated by its reader: it reaches SQL as a bare literal
   if (is.null(survey_id) && is.null(before_date)) {
     cli::cli_abort("Supply survey_id or before_date.", class = "alchemeR_config_error")
   }

@@ -4,10 +4,7 @@
 \alias{alchemer_tz}
 \title{Timezone for the publication layer}
 \usage{
-alchemer_tz(tz = NULL)
-}
-\arguments{
-\item{tz}{Override. Defaults to \code{Sys.getenv("ALCHEMER_TZ")}.}
+alchemer_tz()
 }
 \value{
 A single IANA timezone name, e.g. \code{"America/Toronto"}.

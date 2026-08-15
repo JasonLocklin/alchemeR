@@ -173,8 +173,8 @@ a survey that hasn't been through `pub_layer()` yet.
 all. Nothing is parsed or reinterpreted, so the archive never depends on a
 judgement of ours being right.
 
-`pub` presents them all as wall-clock time in one timezone, `ALCHEMER_TZ` (or
-`pub_layer(tz = )`). Set it to your Alchemer account's timezone, and set it
+`pub` presents them all as wall-clock time in one timezone, `ALCHEMER_TZ`. Set
+it to your Alchemer account's timezone, and set it
 explicitly for scheduled runs — unset, it falls back to the machine's own
 timezone, which would make `pub`'s values depend on which machine last ran.
 

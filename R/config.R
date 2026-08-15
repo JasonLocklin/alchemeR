@@ -1,3 +1,14 @@
+# All configuration comes from the environment, and only from the environment
+# (ADR-019). No function in this package takes a credential, a domain, a
+# timezone, or a tuning value as an argument: there is exactly one place a
+# setting can come from, so "why did this run behave differently?" is always
+# answered by the environment it ran in.
+#
+# A secret still does not have to be written down. A script sets the variable
+# from whatever vault it already uses -- keyring::key_get(), say -- before
+# calling anything here, which keeps the secret out of project source without
+# this package needing to know that vaults exist. See vignette("scheduling").
+
 # Read an environment variable, falling back to `default` when it is either
 # unset *or* set to the empty string. The empty case matters: Renviron.example
 # ships every optional setting as a `NAME=value` line, so a user who blanks
@@ -10,31 +21,40 @@ env_or <- function(name, default) {
   if (nzchar(value)) value else default
 }
 
+# The shared shape of "this setting has no usable value": name the variable,
+# and say what to set it to.
+abort_unset <- function(variable, what, hint = NULL) {
+  cli::cli_abort(
+    c(
+      "No {what} configured.",
+      "i" = "Set the {.envvar {variable}} environment variable.",
+      hint
+    ),
+    class = "alchemeR_config_error", call = NULL
+  )
+}
+
 #' Alchemer API credentials
 #'
 #' Reads `ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET` from the environment.
-#' Either may be supplied directly as an argument instead (so, e.g., `keyring`
-#' users can source the secret without ever writing it to project source).
+#' To keep a secret out of project source, set the variable from a vault in
+#' your script: `Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get(...))`.
 #'
-#' @param token API token. Defaults to `Sys.getenv("ALCHEMER_API_TOKEN")`.
-#' @param secret API secret. Defaults to `Sys.getenv("ALCHEMER_API_SECRET")`.
 #' @return A list with `token` and `secret`.
 #' @keywords internal
-alchemer_creds <- function(token = NULL, secret = NULL) {
-  token <- token %||% env_or("ALCHEMER_API_TOKEN", "")
-  secret <- secret %||% env_or("ALCHEMER_API_SECRET", "")
+alchemer_creds <- function() {
+  token <- env_or("ALCHEMER_API_TOKEN", "")
+  secret <- env_or("ALCHEMER_API_SECRET", "")
 
   if (!nzchar(token)) {
-    cli::cli_abort(c(
-      "Alchemer API token not found.",
-      "i" = "Set the {.envvar ALCHEMER_API_TOKEN} environment variable, or pass {.arg token} directly."
-    ), class = "alchemeR_config_error")
+    abort_unset("ALCHEMER_API_TOKEN", "Alchemer API token")
   }
   if (!nzchar(secret)) {
-    cli::cli_abort(c(
-      "Alchemer API secret not found.",
-      "i" = "Set the {.envvar ALCHEMER_API_SECRET} environment variable, or pass {.arg secret} directly."
-    ), class = "alchemeR_config_error")
+    abort_unset(
+      "ALCHEMER_API_SECRET", "Alchemer API secret",
+      hint = c("i" = "From a vault: {.code Sys.setenv(ALCHEMER_API_SECRET =
+                keyring::key_get(\"alchemer\", \"api_secret\"))}.")
+    )
   }
 
   list(token = token, secret = secret)
@@ -47,30 +67,29 @@ alchemer_creds <- function(token = NULL, secret = NULL) {
 #' for every account outside that region; the API docs call a wrong-domain
 #' call "one of the most common causes of failed API calls".
 #'
-#' @param domain Domain override. Defaults to `Sys.getenv("ALCHEMER_DOMAIN")`.
 #' @return A single string, e.g. `"api.alchemer.com"`.
 #' @keywords internal
-alchemer_domain <- function(domain = NULL) {
-  domain %||% env_or("ALCHEMER_DOMAIN", "api.alchemer.com")
+alchemer_domain <- function() {
+  env_or("ALCHEMER_DOMAIN", "api.alchemer.com")
 }
 
 #' Alchemer application database directory
 #'
-#' Every pipeline function defaults its `db` argument to this. Also handy for
-#' opening your own connection (see `vignette("getting-started")`), since it
-#' gives the same actionable error as the pipeline functions when
+#' Reads `ALCHEMER_DB`. Every pipeline function defaults its `db` argument to
+#' this, and it is exported so that opening your own connection (see
+#' `vignette("getting-started")`) gives the same actionable error when
 #' `ALCHEMER_DB` isn't set, rather than a raw "object not found".
 #'
-#' @param db Directory override. Defaults to `Sys.getenv("ALCHEMER_DB")`.
 #' @return A single string path.
 #' @export
-alchemer_db_path <- function(db = NULL) {
-  db <- db %||% env_or("ALCHEMER_DB", "")
+alchemer_db_path <- function() {
+  db <- env_or("ALCHEMER_DB", "")
   if (!nzchar(db)) {
-    cli::cli_abort(c(
-      "No application database directory configured.",
-      "i" = "Set the {.envvar ALCHEMER_DB} environment variable, or pass {.arg db} directly."
-    ), class = "alchemeR_config_error")
+    abort_unset(
+      "ALCHEMER_DB", "application database directory",
+      hint = c("i" = "Use an absolute path for a scheduled job: its working directory
+                is not guaranteed.")
+    )
   }
   db
 }
@@ -81,11 +100,10 @@ alchemer_db_path <- function(db = NULL) {
 #' documented account-wide limit of 240/min, leaving headroom for other,
 #' interactive use of the same account (ADR-011).
 #'
-#' @param rpm Override. Defaults to `Sys.getenv("ALCHEMER_RPM")`.
 #' @return A single number.
 #' @keywords internal
-alchemer_rpm <- function(rpm = NULL) {
-  as.numeric(rpm %||% env_or("ALCHEMER_RPM", "100"))
+alchemer_rpm <- function() {
+  as.numeric(env_or("ALCHEMER_RPM", "100"))
 }
 
 #' Timezone for the publication layer
@@ -100,25 +118,54 @@ alchemer_rpm <- function(rpm = NULL) {
 #' [pub_layer()], so a laptop and a UTC server would write different values
 #' into the same shared database.
 #'
-#' @param tz Override. Defaults to `Sys.getenv("ALCHEMER_TZ")`.
 #' @return A single IANA timezone name, e.g. `"America/Toronto"`.
 #' @keywords internal
-alchemer_tz <- function(tz = NULL) {
+alchemer_tz <- function() {
   # Sys.timezone() returns NA when the OS zone can't be determined, so it
   # needs or_default() rather than %||% behind it.
-  tz <- tz %||% env_or("ALCHEMER_TZ", or_default(Sys.timezone(), "UTC"))
+  tz <- env_or("ALCHEMER_TZ", or_default(Sys.timezone(), "UTC"))
   # Validated against the IANA database rather than quoted in context: this
   # reaches SQL as a bare `AT TIME ZONE '<tz>'` literal, and an unrecognised
   # name is a configuration mistake worth naming up front rather than a
   # confusing DuckDB error thrown once per generated statement.
   if (!isTRUE(tz %in% OlsonNames())) {
-    cli::cli_abort(c(
-      "{.val {tz}} is not a known timezone name.",
-      "i" = "Set {.envvar ALCHEMER_TZ} to an IANA name such as {.val America/Toronto}.",
-      "i" = "See {.run OlsonNames()} for the full list."
-    ), class = "alchemeR_config_error")
+    cli::cli_abort(
+      c(
+        "{.val {tz}} is not a known timezone name.",
+        "i" = "Set {.envvar ALCHEMER_TZ} to an IANA name such as {.val America/Toronto}.",
+        "i" = "See {.run OlsonNames()} for the full list."
+      ),
+      class = "alchemeR_config_error", call = NULL
+    )
   }
   tz
+}
+
+#' Title language for the publication layer
+#'
+#' Which language multilingual titles are resolved to in `pub`. Defaults to
+#' `ALCHEMER_LANGUAGE`, then `"English"`. Changing it makes the next
+#' [pub_layer()] rebuild every survey, since it changes the values written
+#' from identical input (ADR-017).
+#'
+#' @return A single string, e.g. `"English"`.
+#' @keywords internal
+alchemer_language <- function() {
+  language <- env_or("ALCHEMER_LANGUAGE", "English")
+  # Validated up front for the same reason as the timezone above: title_sql()
+  # interpolates this straight into a generated SQL/JSONPath expression with
+  # no further escaping. Alchemer language names are always simple words.
+  if (!grepl("^[A-Za-z0-9 _-]+$", language)) {
+    cli::cli_abort(
+      c(
+        "{.envvar ALCHEMER_LANGUAGE} must contain only letters, digits, spaces,
+         '-', or '_'; got {.val {language}}.",
+        "i" = "It is the language name Alchemer uses for a title, e.g. {.val English}."
+      ),
+      class = "alchemeR_config_error", call = NULL
+    )
+  }
+  language
 }
 
 #' Maximum staleness backstop for survey refresh
@@ -127,9 +174,8 @@ alchemer_tz <- function(tz = NULL) {
 #' detection already catches new responses, edits, and deletions, so this
 #' only bounds how long an undetected change could persist.
 #'
-#' @param days Override. Defaults to `Sys.getenv("ALCHEMER_FULL_SWEEP_DAYS")`.
 #' @return A single number.
 #' @keywords internal
-alchemer_full_sweep_days <- function(days = NULL) {
-  as.numeric(days %||% env_or("ALCHEMER_FULL_SWEEP_DAYS", "90"))
+alchemer_full_sweep_days <- function() {
+  as.numeric(env_or("ALCHEMER_FULL_SWEEP_DAYS", "90"))
 }

@@ -1,5 +1,5 @@
 ingest_test_client <- function() {
-  alchemer_client(token = "T", secret = "S", domain = "api.alchemer.com", rpm = 1000)
+  new_alchemer_client("T", "S", domain = "api.alchemer.com", rpm = 1000)
 }
 
 new_state <- function() {
@@ -273,7 +273,8 @@ test_that("full_sweep_days = 0 forces every survey to refresh", {
   ingest(db = dir, client = ingest_test_client())
 
   httr2::local_mocked_responses(mock_client_router(state))
-  out <- ingest(db = dir, client = ingest_test_client(), full_sweep_days = 0)
+  withr::local_envvar(ALCHEMER_FULL_SWEEP_DAYS = "0")
+  out <- ingest(db = dir, client = ingest_test_client())
   expect_equal(out$status, "ok")
   expect_match(out$decision, "full_sweep_days")
 })

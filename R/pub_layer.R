@@ -449,34 +449,28 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #' @param surveys If supplied, only these survey ids are considered, and each
 #'   is rebuilt whether or not it has changed. Otherwise every survey in
 #'   `raw.surveys` is considered and the changed ones are rebuilt.
-#' @param language Which title language to resolve multilingual fields to.
-#'   Letters, digits, spaces, and `-`/`_` only (Alchemer language names are
-#'   always simple words, e.g. `"English"`) -- title_sql() interpolates this
-#'   directly into a generated SQL/JSONPath expression with no further
-#'   escaping, so it is validated up front rather than quoted in context.
 #' @param wide_views Whether to (re)generate the per-survey wide views.
-#' @param tz Timezone for every `pub` timestamp. Defaults to `ALCHEMER_TZ`,
-#'   then the machine's own timezone (see [alchemer_tz()]). Set `ALCHEMER_TZ`
-#'   explicitly for scheduled runs so the values written don't depend on
-#'   which machine ran them.
 #' @param force Rebuild every survey considered, skipping change detection.
 #'   For rebuilding after something outside this function has touched `pub`.
+#' @section Configuration:
+#' The timezone and the title language come from the environment and cannot be
+#' passed here (ADR-019): `ALCHEMER_TZ` and `ALCHEMER_LANGUAGE`. Changing
+#' either makes the next run rebuild every survey, since both change the values
+#' written from identical input. Set `ALCHEMER_TZ` explicitly for a scheduled
+#' run — unset, it falls back to the machine's own timezone, so a laptop and a
+#' UTC server would write different values into one database.
 #' @return Invisibly, the character vector of survey ids actually rebuilt --
 #'   which on an unchanged database is legitimately empty.
 #' @seealso [ingest()], which fills the `raw` layer this is built from.
 #' @export
-pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "English",
-                      wide_views = TRUE, tz = NULL, force = FALSE) {
-  # Routed through alchemer_tz() even when supplied directly, so an explicit
-  # argument is validated against the IANA database exactly like the
-  # environment variable is -- `tz` reaches SQL as a bare literal.
-  tz <- alchemer_tz(tz)
-  if (!grepl("^[A-Za-z0-9 _-]+$", language)) {
-    cli::cli_abort(
-      "`language` must contain only letters, digits, spaces, '-', or '_'; got {.val {language}}.",
-      class = "alchemeR_config_error"
-    )
-  }
+pub_layer <- function(db = alchemer_db_path(), surveys = NULL,
+                      wide_views = TRUE, force = FALSE) {
+  # Both validated by their config readers before reaching SQL, where each
+  # arrives as a bare literal: an IANA name for the timezone, and a strict
+  # character allowlist for the language (title_sql() interpolates it into a
+  # generated SQL/JSONPath expression with no further escaping).
+  tz <- alchemer_tz()
+  language <- alchemer_language()
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
   assert_schema_compatible(con, db)

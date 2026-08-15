@@ -14,7 +14,10 @@ test_that("alchemer_request builds the credentialed URL against the right domain
 })
 
 test_that("alchemer_client respects ALCHEMER_DOMAIN for regional accounts", {
-  client <- alchemer_client(token = "T", secret = "S", domain = "api.alchemer.eu")
+  withr::local_envvar(
+    ALCHEMER_API_TOKEN = "T", ALCHEMER_API_SECRET = "S", ALCHEMER_DOMAIN = "api.alchemer.eu"
+  )
+  client <- alchemer_client()
   httptest2::without_internet({
     req <- alchemer_request(client, "survey")
     httptest2::expect_GET(

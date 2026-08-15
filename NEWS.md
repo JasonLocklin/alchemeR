@@ -12,6 +12,16 @@ that keeps it — and optionally your analytics database — current.
   and `vignette("getting-started")`.
 * The database can be read while the pipeline writes to it, so an analyst's
   session never blocks a scheduled run and is never blocked by one.
+* All configuration comes from `ALCHEMER_*` environment variables and nowhere
+  else. `alchemer_client()` now takes no arguments; `ingest()` no longer takes
+  `full_sweep_days` or `rpm`; `pub_layer()` no longer takes `tz` or `language`;
+  `expunge()` no longer takes `tz`. The new `ALCHEMER_LANGUAGE` replaces
+  `pub_layer(language = )`. To keep a secret out of project source, set the
+  variable from a vault in your script —
+  `Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))`.
+  The deprecated `all_surveys()`, `fetch_survey()`, and `fetch_data_dictionary()`
+  keep their `token`/`secret_key` arguments, so existing calls to them still
+  work unchanged.
 * The application database carries a `major.minor` schema version. A minor bump
   (a change to `pub` or the SQL that builds it) makes `pub_layer()` drop and
   rebuild the whole `pub` schema automatically, so it can't drift. A major bump

@@ -4,10 +4,7 @@
 \alias{alchemer_rpm}
 \title{Alchemer API request throttle ceiling}
 \usage{
-alchemer_rpm(rpm = NULL)
-}
-\arguments{
-\item{rpm}{Override. Defaults to \code{Sys.getenv("ALCHEMER_RPM")}.}
+alchemer_rpm()
 }
 \value{
 A single number.

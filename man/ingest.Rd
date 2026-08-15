@@ -9,10 +9,8 @@ ingest(
   surveys = NULL,
   force = FALSE,
   include = c("campaigns", "statistics"),
-  full_sweep_days = alchemer_full_sweep_days(),
-  rpm = alchemer_rpm(),
   dry_run = FALSE,
-  client = alchemer_client(rpm = rpm)
+  client = alchemer_client()
 )
 }
 \arguments{
@@ -27,13 +25,6 @@ always refreshed regardless of change detection.}
 \code{"campaigns"} and \code{"statistics"}, both on by default. Contacts (heavy
 PII, ADR-009) are account-level rather than per-survey and are not
 fetched by \code{ingest()} at all yet.}
-
-\item{full_sweep_days}{Maximum days since a survey's last successful
-refresh before it is refreshed regardless of change detection --
-a correctness backstop, not a freshness setting (ADR-004).}
-
-\item{rpm}{Request-per-minute throttle ceiling, passed to \code{\link[=alchemer_client]{alchemer_client()}}
-when \code{client} is not supplied directly.}
 
 \item{dry_run}{If \code{TRUE}, make the same decisions and requests but write no
 data. The database directory and its empty tables are still created if
@@ -56,3 +47,12 @@ only \emph{when} a survey is worth refreshing, and is designed to be safely
 wrong: an incorrect hint costs freshness, bounded by \code{full_sweep_days},
 never a missing or wrong row.
 }
+\section{Configuration}{
+
+Credentials, the API domain, the request throttle, and the staleness
+backstop all come from the environment and cannot be passed here (ADR-019):
+\code{ALCHEMER_API_TOKEN}, \code{ALCHEMER_API_SECRET}, \code{ALCHEMER_DOMAIN},
+\code{ALCHEMER_RPM}, and \code{ALCHEMER_FULL_SWEEP_DAYS}. See
+\code{vignette("getting-started")}.
+}
+

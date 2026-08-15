@@ -4,17 +4,14 @@
 \alias{alchemer_db_path}
 \title{Alchemer application database directory}
 \usage{
-alchemer_db_path(db = NULL)
-}
-\arguments{
-\item{db}{Directory override. Defaults to \code{Sys.getenv("ALCHEMER_DB")}.}
+alchemer_db_path()
 }
 \value{
 A single string path.
 }
 \description{
-Every pipeline function defaults its \code{db} argument to this. Also handy for
-opening your own connection (see \code{vignette("getting-started")}), since it
-gives the same actionable error as the pipeline functions when
+Reads \code{ALCHEMER_DB}. Every pipeline function defaults its \code{db} argument to
+this, and it is exported so that opening your own connection (see
+\code{vignette("getting-started")}) gives the same actionable error when
 \code{ALCHEMER_DB} isn't set, rather than a raw "object not found".
 }
