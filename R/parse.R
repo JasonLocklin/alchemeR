@@ -12,15 +12,6 @@ pii_keys <- c(
   "user_agent"
 )
 
-# NULL, empty list, and "field absent" all collapse to NA for a scalar
-# column; anything else is coerced to a length-1 character.
-chr1 <- function(x) {
-  if (is.null(x) || (is.list(x) && length(x) == 0)) {
-    return(NA_character_)
-  }
-  as.character(x)
-}
-
 # A nested field (object/array) becomes JSON text. An absent field (`NULL`)
 # becomes SQL NULL rather than the string "null"; an empty array or object
 # that Alchemer actually sent is kept as the `[]`/`{}` it sent, since "the
@@ -34,6 +25,32 @@ json1 <- function(x, redact = character(0)) {
     x[redact] <- NULL
   }
   as.character(jsonlite::toJSON(x, auto_unbox = TRUE, null = "null"))
+}
+
+# NULL, empty list, and "field absent" all collapse to NA for a scalar
+# column; anything else becomes exactly one string.
+#
+# "Exactly one" is the whole job here, and it used to be a bare as.character()
+# that merely assumed it. Alchemer varies the *arity* of fields it documents as
+# scalars -- `team` is one id on most surveys and an array on a survey shared
+# across teams, and it is not the only one -- so as.character() handed
+# purrr::map_chr() a length-2 vector and it aborted the survey's whole refresh
+# with "Result must be length 1, not 2". Worse was the length-1 structured
+# case, which did not abort: as.character(list(id = "1", name = "Team"))
+# deparses, so an R expression was silently archived as if it were the value.
+#
+# A structure that lands in a scalar column is therefore kept as JSON. That is
+# the same thing json1() does for a column already known to be nested, and it
+# is what `raw` is for -- record what arrived, verbatim, and let pub_layer()
+# decide what it means. No field shape may fail an ingest.
+chr1 <- function(x) {
+  if (length(x) == 0) {
+    return(NA_character_)
+  }
+  if (!is.atomic(x) || length(x) > 1) {
+    return(json1(x))
+  }
+  as.character(x)
 }
 
 #' Parse a `GET /v5/survey` list into `raw.surveys` rows

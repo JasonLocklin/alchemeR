@@ -248,7 +248,10 @@ test_that("an error mid-survey leaves prior state intact and other surveys commi
   }
   state$responses[["2"]] <- list(mock_response("r2"), mock_response("r3", date_updated = "2026-03-01 00:00:00"))
   httr2::local_mocked_responses(broken_router)
-  out <- ingest(db = dir, client = ingest_test_client(), force = TRUE)
+  expect_warning(
+    out <- ingest(db = dir, client = ingest_test_client(), force = TRUE),
+    class = "alchemeR_ingest_failures"
+  )
 
   expect_equal(out$status[out$survey_id == "1"], "error")
   expect_equal(out$status[out$survey_id == "2"], "ok")
@@ -446,7 +449,10 @@ test_that("a failed integrity check is recorded, not discarded with the rollback
   state$responses <- list("1" = list(mock_response("r1"), mock_response("r1")))
 
   httr2::local_mocked_responses(mock_client_router(state))
-  out <- ingest(db = dir, client = ingest_test_client())
+  expect_warning(
+    out <- ingest(db = dir, client = ingest_test_client()),
+    class = "alchemeR_ingest_failures"
+  )
   expect_equal(out$status, "error")
 
   con <- alchemer_db(dir, read_only = TRUE)
@@ -507,4 +513,264 @@ test_that("time travel returns the pre-refresh state", {
   ))$n
   expect_equal(now_count, 2)
   expect_equal(past_count, 1)
+})
+
+test_that("a failed refresh carries its reason out of ingest(), not just its status", {
+  # Without this, ingest() reported `status = "error"` and nothing else: the
+  # only trace of *why* was in meta.run_events, which a caller watching a
+  # scheduled run has no reason to know about. The warning matters for the
+  # same reason -- the return value is invisible, so a silent failure was
+  # genuinely silent.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+
+  broken_router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/survey/1$", parsed$path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 401, message = "Login failed / Invalid auth token"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(broken_router)
+  expect_warning(
+    out <- ingest(db = dir, client = ingest_test_client()),
+    class = "alchemeR_ingest_failures"
+  )
+
+  expect_equal(out$status, "error")
+  expect_match(out$message, "Invalid auth token")
+  # `code` from a result_ok: false envelope, since HTTP itself said 200.
+  expect_equal(out$http_status, 401L)
+})
+
+test_that("a probe failure is recorded even though it doesn't fail the survey", {
+  # The probe error used to be discarded by `error = function(e) NULL`, so a
+  # survey the API consistently rejected on the probe left no trace beyond the
+  # decision reason "probe request failed" -- with no status and no message.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+
+  router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/surveyresponse$", parsed$path) && !is.null(parsed$query$order_by)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 500, message = "probe boom"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(router)
+  out <- ingest(db = dir, client = ingest_test_client())
+
+  # The refresh itself still succeeded: a failed probe only costs change
+  # detection, never the data.
+  expect_equal(out$status, "ok")
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  probe_event <- DBI::dbGetQuery(con, "SELECT http_status, message FROM alchemer.meta.run_events
+    WHERE phase = 'probe' AND status = 'error'")
+  expect_equal(nrow(probe_event), 1)
+  expect_equal(probe_event$http_status, 500L)
+  expect_match(probe_event$message, "probe boom")
+  # ...and it is not reported as a failing survey, because it isn't one.
+  expect_equal(nrow(ingest_failures(dir)), 0)
+})
+
+test_that("ingest_failures() names the failing surveys, with the reason", {
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1", title = "Broken"), mock_survey("2", title = "Fine"))
+  state$responses <- list("1" = list(mock_response("r1")), "2" = list(mock_response("r2")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+  expect_equal(nrow(ingest_failures(dir)), 0)
+
+  broken_router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/survey/1$", parsed$path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 500, message = "boom"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(broken_router)
+  suppressWarnings(ingest(db = dir, client = ingest_test_client(), force = TRUE))
+
+  failures <- ingest_failures(dir)
+  expect_equal(failures$survey_id, "1")
+  expect_equal(failures$title, "Broken")
+  expect_equal(failures$consecutive_failures, 1L)
+  expect_equal(failures$last_error_phase, "refresh")
+  expect_equal(failures$http_status, 500L)
+  expect_match(failures$message, "boom")
+  # The survey's own prior data -- and its last-success timestamp -- survive
+  # the failed refresh, which is the reassurance the column exists to give.
+  expect_false(is.na(failures$last_successful_refresh_at))
+
+  # ...and the survey drops off the report once it refreshes successfully.
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client(), force = TRUE)
+  expect_equal(nrow(ingest_failures(dir)), 0)
+})
+
+test_that("ingest_failures() attaches the integrity checks that failed", {
+  # An integrity failure made no request, so it has no status code -- the
+  # reason lives entirely in the check names and messages.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1"), mock_response("r1")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  suppressWarnings(ingest(db = dir, client = ingest_test_client()))
+
+  failures <- ingest_failures(dir)
+  expect_equal(failures$survey_id, "1")
+  expect_true(is.na(failures$http_status))
+  expect_match(failures$failed_checks, "no_duplicate_responses")
+  expect_match(failures$failed_checks, "duplicate")
+  # Never successfully refreshed, so there is no archived data to fall back on.
+  expect_true(is.na(failures$last_successful_refresh_at))
+})
+
+test_that("a failed survey is retried on the next run, not silently parked", {
+  # Regression test: a failed refresh used to record the probe values it had
+  # just failed to archive, so the next run compared them against themselves,
+  # decided "no change detected", and skipped the survey -- silently, for up to
+  # full_sweep_days (90 by default), with consecutive_failures frozen at 1 and
+  # the responses it never fetched still missing. The hints describe what was
+  # successfully archived, so a failure must leave them where they were.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  ingest(db = dir, client = ingest_test_client())
+
+  # A new response arrives, so change detection wants a refresh -- and the
+  # refresh fails.
+  state$responses[["1"]] <- list(mock_response("r1"), mock_response("r2", date_updated = "2026-06-01 00:00:00"))
+  broken_router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/survey/1$", parsed$path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 500, message = "boom"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(broken_router)
+  suppressWarnings(ingest(db = dir, client = ingest_test_client()))
+
+  # Nothing upstream has changed since the failure -- it must still retry,
+  # because the survey has responses that are not archived.
+  httr2::local_mocked_responses(broken_router)
+  out <- suppressWarnings(ingest(db = dir, client = ingest_test_client()))
+  expect_equal(out$status, "error")
+  expect_equal(ingest_failures(dir)$consecutive_failures, 2L)
+
+  # ...and when the API recovers, the response missed during the outage is
+  # picked up without anyone forcing anything.
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client())
+  expect_equal(out$status, "ok")
+  expect_equal(out$n_fetched, 2)
+  expect_equal(nrow(ingest_failures(dir)), 0)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  expect_equal(DBI::dbGetQuery(con, "SELECT COUNT(*) n FROM alchemer.raw.responses")$n, 2)
+})
+
+test_that("a survey whose fields arrive as arrays ingests instead of failing", {
+  # Regression test: `team` on a survey shared across two teams, and any other
+  # field Alchemer returns with varying arity, reached purrr::map_chr() as a
+  # length-2 vector and aborted that survey's refresh -- "Result must be length
+  # 1, not 2" -- on every run, for as long as the survey stayed shared. Only a
+  # handful of surveys in an account are affected, which is exactly what made
+  # it look like something wrong with those surveys rather than with parsing.
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(
+    mock_survey("1"),
+    modifyList(mock_survey("2"), list(team = list("10", "11")))
+  )
+  state$responses <- list(
+    "1" = list(mock_response("r1")),
+    "2" = list(modifyList(mock_response("r2"), list(link_id = list("1", "2"))))
+  )
+
+  httr2::local_mocked_responses(mock_client_router(state))
+  out <- ingest(db = dir, client = ingest_test_client())
+
+  expect_equal(out$status, c("ok", "ok"))
+  expect_equal(nrow(ingest_failures(dir)), 0)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  teams <- DBI::dbGetQuery(con, "SELECT survey_id, team FROM alchemer.raw.surveys ORDER BY survey_id")
+  expect_equal(teams$team, c("1", '["10","11"]'))
+  links <- DBI::dbGetQuery(con, "SELECT link_id FROM alchemer.raw.responses WHERE survey_id = '2'")
+  expect_equal(links$link_id, '["1","2"]')
+})
+
+test_that("flatten_message turns a bulleted, multi-line error into one readable line", {
+  # meta.run_events.message and ingest()'s `message` column are read in a
+  # tibble cell and a log file, neither of which renders cli's multi-line
+  # layout -- it arrives garbled, with the actual sentence truncated away
+  # behind the decoration. Every word has to survive; only the layout goes.
+  msg <- flatten_message("Problem while fetching.\nℹ In index: 1.\nCaused by error:\n! Result must be length 1, not 2.")
+  expect_equal(
+    msg,
+    "Problem while fetching. In index: 1. Caused by error: Result must be length 1, not 2."
+  )
+  expect_false(grepl("\n", msg, fixed = TRUE))
+
+  # A line of real prose that happens to start with a bullet-shaped word is
+  # left alone.
+  expect_equal(flatten_message("integrity check(s) failed: x"), "integrity check(s) failed: x")
+  expect_equal(flatten_message("single line"), "single line")
+})
+
+test_that("a failure's message reaches meta.run_events as one line", {
+  dir <- withr::local_tempdir()
+  state <- new_state()
+  state$surveys <- list(mock_survey("1"))
+  state$responses <- list("1" = list(mock_response("r1")))
+
+  broken_router <- function(req) {
+    parsed <- httr2::url_parse(req$url)
+    if (grepl("/survey/1$", parsed$path)) {
+      return(httr2::response_json(status_code = 200, body = list(
+        result_ok = FALSE, code = 500, message = "Something went wrong"
+      )))
+    }
+    mock_client_router(state)(req)
+  }
+  httr2::local_mocked_responses(broken_router)
+  out <- suppressWarnings(ingest(db = dir, client = ingest_test_client()))
+
+  expect_equal(out$status, "error")
+  expect_false(grepl("\n", out$message, fixed = TRUE))
+  # The API's own message and code survive the flattening.
+  expect_match(out$message, "Something went wrong")
+  expect_match(out$message, "500")
+  expect_equal(out$http_status, 500L)
+
+  con <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  logged <- DBI::dbGetQuery(
+    con, "SELECT message FROM alchemer.meta.run_events WHERE status = 'error' AND phase = 'refresh'"
+  )
+  expect_false(any(grepl("\n", logged$message, fixed = TRUE)))
 })

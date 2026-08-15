@@ -133,9 +133,17 @@ outcome and timestamp of the last `ingest()` **and** the last load. That is what
 `load_pipeline_health()` copies downstream, so an alert on "last load older
 than X" or "status is not completed" needs nothing but the analytics database.
 
+When a run reports failures, `ingest_failures()` names the surveys and why —
+error message, status code, and any failed integrity assertion, per survey.
+`ingest()` also warns as it finishes, so an unattended run's log says so
+without anything reading its return value.
+
 For detail, `meta.runs`, `meta.run_events`, `meta.loads`, and
 `meta.integrity_checks` in the application database record every run,
-per-survey decision, load, and assertion result — failures included.
+per-survey decision, load, and assertion result — failures included. A failed
+survey is rolled back whole and retried on the next run, so it needs no
+intervention to be retried; `vignette("troubleshooting")` covers when it needs
+yours.
 
 ## Offline / air-gapped installs
 

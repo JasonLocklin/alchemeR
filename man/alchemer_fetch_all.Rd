@@ -13,7 +13,8 @@ alchemer_fetch_all(client, path, query = list(), resultsperpage = 500)
 
 \item{query}{Named list of additional query parameters.}
 
-\item{resultsperpage}{Page size, max 500.}
+\item{resultsperpage}{Default page size, max 500. A \code{resultsperpage} in
+\code{query} takes precedence.}
 }
 \value{
 A list of the combined \code{data} elements across every page.

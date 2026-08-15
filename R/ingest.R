@@ -22,8 +22,12 @@ probe_survey <- function(client, survey_id) {
   body <- httr2::resp_body_json(resp, simplifyVector = FALSE)
   if (isFALSE(body$result_ok)) {
     cli::cli_abort(
-      c("Probe request failed for survey {survey_id}.", "x" = body$message %||% "unknown error"),
-      class = "alchemeR_api_result_error", call = NULL
+      c(
+        "Probe request failed for survey {survey_id}.",
+        "x" = body$message %||% "unknown error",
+        "i" = "Code: {body$code %||% 'unknown'}"
+      ),
+      class = "alchemeR_api_result_error", code = body$code, call = NULL
     )
   }
   # body$data is an empty list for a survey with zero responses --
@@ -76,15 +80,41 @@ get_survey_state <- function(con, survey_id) {
 # autocommit statement after a rollback (on failure) -- so a failure's
 # bookkeeping survives the rollback that discards everything else (ADR-007's
 # logic applies here too: failure records must outlive the failure).
+#
+# The three change-detection hints describe *the state that was successfully
+# archived*, so a failed refresh must not advance them. Recording what a failed
+# refresh saw made the next run compare those values against themselves,
+# conclude "no change detected", and skip the survey -- so one failure silently
+# parked it until full_sweep_days (90 days by default) elapsed or it happened
+# to change again upstream, with consecutive_failures frozen at 1 and the
+# responses it failed to fetch never archived. That is the ADR-004 rule read
+# the wrong way round: a hint may only ever cost freshness, and this cost data.
+# A failure has to leave change detection pointing at the last *successful*
+# state, so that the difference the next run sees is what makes it retry.
 update_survey_state <- function(con, survey_id, modified_on, probe, success, now = Sys.time()) {
   prior <- get_survey_state(con, survey_id)
-  consecutive_failures <- if (nrow(prior) == 0) 0L else as.integer(prior$consecutive_failures[1] %||% 0L)
-  prior_success_at <- if (nrow(prior) == 0) as.POSIXct(NA) else prior$last_successful_refresh_at[1]
+  had_prior <- nrow(prior) > 0
+  consecutive_failures <- if (!had_prior) 0L else as.integer(prior$consecutive_failures[1] %||% 0L)
+  prior_success_at <- if (!had_prior) as.POSIXct(NA) else prior$last_successful_refresh_at[1]
+  # With no prior row there is nothing to roll back to, and none is needed:
+  # last_successful_refresh_at stays NA, which decide_refresh() short-circuits
+  # to "never successfully refreshed" and retries on its own.
+  keep_prior_hints <- !success && had_prior
   row <- tibble::tibble(
     survey_id = survey_id,
-    last_modified_on = chr1(modified_on),
-    last_probe_total_count = as.integer(probe$total_count %||% NA_integer_),
-    last_probe_max_date_updated = chr1(probe$max_date_updated %||% NA),
+    last_modified_on = if (keep_prior_hints) chr1(prior$last_modified_on[1]) else chr1(modified_on),
+    last_probe_total_count = if (keep_prior_hints) {
+      as.integer(prior$last_probe_total_count[1])
+    } else {
+      as.integer(probe$total_count %||% NA_integer_)
+    },
+    last_probe_max_date_updated = if (keep_prior_hints) {
+      chr1(prior$last_probe_max_date_updated[1])
+    } else {
+      chr1(probe$max_date_updated %||% NA)
+    },
+    # Not a hint: this records the attempt, which did happen. It is what
+    # ingest_failures() reports as last_attempt_at.
     last_refresh_started_at = now,
     last_successful_refresh_at = if (success) now else prior_success_at,
     consecutive_failures = if (success) 0L else consecutive_failures + 1L
@@ -109,6 +139,46 @@ write_rows_generic <- function(con, table, rows) {
   DBI::dbExecute(con, glue::glue("INSERT INTO {ducklake_alias}.{table} SELECT * FROM {tmp_name}"))
   duckdb::duckdb_unregister(con, tmp_name)
   invisible(NULL)
+}
+
+# The status code a failure carries, for meta.run_events.http_status. Two
+# different things land in that column, and they are not ambiguous in
+# practice: the real HTTP status when the request itself failed
+# (alchemeR_api_error), or Alchemer's own `code` when HTTP said 200 and the
+# envelope said result_ok: false (alchemeR_api_result_error). Alchemer's codes
+# are HTTP-shaped -- 401 for bad credentials, 500 for a server-side timeout --
+# which is why one column can hold both and still mean something.
+#
+# NA is a real answer here (a connection failure never got a status, and an
+# integrity-check failure never made a request), so this must not invent one.
+error_status_code <- function(e) {
+  # or_default(e$status, NULL) rather than e$status %||% e$code: a connection
+  # failure sets `status` to NA rather than leaving it unset, and %||% only
+  # falls through on NULL.
+  status <- or_default(e$status, NULL) %||% e$code
+  suppressWarnings(as.integer(status %||% NA_integer_))
+}
+
+# Every place a failure's text is shown -- meta.run_events.message, ingest()'s
+# returned `message` column, the end-of-run warning -- is a place that renders
+# one line: a tibble cell, a cron job's log file, a SQL client. An rlang or cli
+# error is not one line. It arrives as a multi-line, glyph-bulleted block
+# ("i In index: 1.\nCaused by error:\n! Result must be length 1, not 2."), and
+# once that has been squeezed into a tibble cell what the reader gets is
+# garbled -- the actual sentence truncated away behind the decoration.
+#
+# So flatten it here: drop the bullet glyphs, which only mean anything in the
+# console they were formatted for, and join the lines. Every word survives;
+# only the layout goes.
+flatten_message <- function(x) {
+  lines <- unlist(strsplit(as.character(x), "\n", fixed = TRUE))
+  # cli's unicode bullets, plus the ASCII fallbacks it uses when the console
+  # cannot render them. Anchored and space-terminated so a line of real text
+  # that merely starts with "x" or "!" is left alone.
+  glyphs <- "\u2139|\u2716|\u2714|\u2022|\u00d7|i|x|!|\\*|\\+"
+  lines <- sub(paste0("^\\s*(", glyphs, ")\\s+"), "", lines)
+  lines <- trimws(lines)
+  paste(lines[nzchar(lines)], collapse = " ")
 }
 
 log_event <- function(con, run_id, survey_id, phase, status, http_status = NA_integer_,
@@ -202,9 +272,18 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
       }
 
       update_survey_state(con, survey_id, modified_on, probe, success = TRUE, now = now)
-      list(status = "ok", message = "OK")
+      list(status = "ok", message = "OK", http_status = NA_integer_)
     },
-    error = function(e) list(status = "error", message = conditionMessage(e))
+    # conditionMessage(), not the bare condition: rlang formats a cli_abort's
+    # bullets into the message, so the redacted path, the API's own code, and
+    # the failing check names all survive into meta.run_events.message. The
+    # status code is the one part that does not, so it is pulled out here.
+    error = function(e) {
+      list(
+        status = "error", message = flatten_message(conditionMessage(e)),
+        http_status = error_status_code(e)
+      )
+    }
   )
 
   if (identical(result$status, "ok")) {
@@ -250,14 +329,28 @@ refresh_survey <- function(con, client, survey_id, run_id, include, modified_on,
 #'   valid, empty database behind.
 #' @param client An `alchemer_client`. Defaults to one built from the
 #'   environment; tests pass a fixture-backed client (ADR-010).
+#' @return Invisibly, a tibble with one row per survey considered:
+#'   `survey_id`, the `decision` that was made and whether it led to a
+#'   `refresh`ed survey, `n_fetched`, a `status` of `"ok"`/`"skipped"`/
+#'   `"dry_run"`/`"error"`, the failure `message` and `http_status` when that
+#'   status is `"error"`, and timings.
 #' @section Configuration:
 #' Credentials, the API domain, the request throttle, and the staleness
 #' backstop all come from the environment and cannot be passed here (ADR-019):
 #' `ALCHEMER_API_TOKEN`, `ALCHEMER_API_SECRET`, `ALCHEMER_DOMAIN`,
 #' `ALCHEMER_RPM`, and `ALCHEMER_FULL_SWEEP_DAYS`. See
 #' `vignette("getting-started")`.
-#' @return Invisibly, a tibble with one row per survey considered: decision,
-#'   counts, timings, and status.
+#' @section When a survey fails:
+#' A failure is scoped to one survey. Its refresh is rolled back whole, so the
+#' data already archived for it is left exactly as it was, every other survey
+#' still commits, and the next run tries again -- there is nothing to clean up
+#' and no partial state to reconcile.
+#'
+#' `ingest()` warns when any survey failed, and the reason is on the returned
+#' tibble. It is also persisted: see [ingest_failures()] for the surveys
+#' currently failing and why, and `vignette("troubleshooting")` for how to read
+#' a particular message.
+#' @seealso [ingest_failures()], [db_status()], [db_check()]
 #' @export
 ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
                    include = c("campaigns", "statistics"),
@@ -293,7 +386,17 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
     modified_on <- discovered$modified_on[discovered$survey_id == survey_id][1]
     prior_state <- if (dry_run) NULL else get_survey_state(con, survey_id)
 
-    probe <- tryCatch(probe_survey(client, survey_id), error = function(e) NULL)
+    # A failed probe is not a failed refresh -- the survey is refreshed anyway,
+    # and usually succeeds -- so it must not abort anything. It is still worth
+    # recording: the error used to be swallowed whole, which left "probe
+    # request failed" as the only trace of, say, a survey the API consistently
+    # 500s on. Kept as a condition object rather than a message so the status
+    # code survives to the log too.
+    probed <- tryCatch(
+      list(probe = probe_survey(client, survey_id), error = NULL),
+      error = function(e) list(probe = NULL, error = e)
+    )
+    probe <- probed$probe
 
     decision <- if (!is.null(surveys)) {
       list(refresh = TRUE, reason = "explicit surveys= argument")
@@ -304,6 +407,14 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
     }
 
     if (!dry_run) {
+      if (!is.null(probed$error)) {
+        log_event(
+          con, run_id, survey_id, "probe", "error",
+          http_status = error_status_code(probed$error),
+          message = flatten_message(conditionMessage(probed$error)),
+          started_at = t0, finished_at = Sys.time()
+        )
+      }
       log_event(
         con, run_id, survey_id, "decision", "info",
         message = decision$reason, started_at = t0, finished_at = Sys.time()
@@ -313,29 +424,41 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
     if (!decision$refresh) {
       return(tibble::tibble(
         survey_id = survey_id, decision = decision$reason, refreshed = FALSE,
-        n_fetched = NA_integer_, status = "skipped", started_at = t0, finished_at = Sys.time()
+        n_fetched = NA_integer_, status = "skipped", message = NA_character_,
+        http_status = NA_integer_, started_at = t0, finished_at = Sys.time()
       ))
     }
     if (dry_run) {
       return(tibble::tibble(
         survey_id = survey_id, decision = decision$reason, refreshed = TRUE,
-        n_fetched = NA_integer_, status = "dry_run", started_at = t0, finished_at = Sys.time()
+        n_fetched = NA_integer_, status = "dry_run", message = NA_character_,
+        http_status = NA_integer_, started_at = t0, finished_at = Sys.time()
       ))
     }
 
     probe_or_unknown <- probe %||% list(total_count = NA_integer_, max_date_updated = NA_character_)
     outcome <- tryCatch(
       refresh_survey(con, client, survey_id, run_id, include, modified_on, probe_or_unknown),
-      error = function(e) list(status = "error", message = conditionMessage(e), n_fetched = NA_integer_)
+      error = function(e) {
+        list(
+          status = "error", message = flatten_message(conditionMessage(e)),
+          http_status = error_status_code(e), n_fetched = NA_integer_
+        )
+      }
     )
     log_event(
-      con, run_id, survey_id, "refresh", outcome$status, message = outcome$message,
-      started_at = t0, finished_at = Sys.time(), n_responses = outcome$n_fetched
+      con, run_id, survey_id, "refresh", outcome$status, http_status = outcome$http_status,
+      message = outcome$message, started_at = t0, finished_at = Sys.time(),
+      n_responses = outcome$n_fetched
     )
 
+    # `message` is carried out of ingest() as well as into meta.run_events:
+    # a caller that has just watched two surveys fail should not have to open
+    # the database to find out why (inst/scripts/ingest_job.R prints it).
     tibble::tibble(
       survey_id = survey_id, decision = decision$reason, refreshed = TRUE,
-      n_fetched = outcome$n_fetched, status = outcome$status, started_at = t0, finished_at = Sys.time()
+      n_fetched = outcome$n_fetched, status = outcome$status, message = outcome$message,
+      http_status = outcome$http_status, started_at = t0, finished_at = Sys.time()
     )
   })
 
@@ -345,8 +468,8 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
   # issue as the empty-parse-result columns fixed in parse.R.
   empty_out <- tibble::tibble(
     survey_id = character(0), decision = character(0), refreshed = logical(0),
-    n_fetched = integer(0), status = character(0),
-    started_at = Sys.time()[0], finished_at = Sys.time()[0]
+    n_fetched = integer(0), status = character(0), message = character(0),
+    http_status = integer(0), started_at = Sys.time()[0], finished_at = Sys.time()[0]
   )
   out <- if (length(results) == 0) empty_out else dplyr::bind_rows(results)
 
@@ -367,6 +490,21 @@ ingest <- function(db = alchemer_db_path(), surveys = NULL, force = FALSE,
       n_checked = nrow(out), n_refreshed = sum(out$refreshed %in% TRUE),
       n_failed = sum(out$status == "error"), n_requests = requests_made(client)
     ))
+  }
+
+  # The return value is invisible, so without this a scheduled run -- and an
+  # interactive one -- reported a survey failing by saying nothing at all.
+  # Warn once for the run rather than per survey: an account-wide problem
+  # (expired key, wrong domain) fails every survey, and one line per survey
+  # would bury the signal it is trying to raise.
+  failed <- out[out$status == "error", , drop = FALSE]
+  if (nrow(failed) > 0) {
+    cli::cli_warn(c(
+      "{nrow(failed)} of {nrow(out)} survey{?s} failed to refresh: {.val {failed$survey_id}}.",
+      "i" = "Each survey's prior data is untouched; a failure rolls its refresh back whole.",
+      "i" = "Why, per survey: the {.field message} column of this call's return value.",
+      "i" = "Later: {.run alchemeR::ingest_failures()}, or {.code vignette(\"troubleshooting\")}."
+    ), class = "alchemeR_ingest_failures")
   }
 
   invisible(out)

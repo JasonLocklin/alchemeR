@@ -320,6 +320,14 @@ falls). ~100 surveys ⇒ ~100 requests per run.
 an undetected change could persist, which is what makes every hint above optional for
 correctness.
 
+**A failed refresh does not advance the hints.** They describe the state that was
+successfully archived, and on a failure nothing was. Recording what a failed refresh saw
+makes the next run compare those values against themselves, find no change, and skip the
+survey — which turns "this hint was wrong" into missing data rather than late data, the
+one outcome this ADR exists to prevent. So a failure leaves `last_modified_on` and the
+probe pair at their last successful values, and the difference the next run sees is what
+retries it. See round three in §9.
+
 ## ADR-005 — Deletions are flagged by set difference during a full refresh
 
 > **Amended by ADR-013 (2026-08-13):** merge instead of replace. The flagging rule below
@@ -954,9 +962,26 @@ bug that will recur in this codebase, and the test suite now pins each one.
 | `lint_package()` *crashed* rather than linting, so "lintr clean" was never verifiable. | Verify that your verification runs. |
 | `expunge()` and `expire_history()` didn't actually reclaim files; maintenance never ran at all (ADR-015, §6). | Functions that document an effect must be tested for the effect, not the call. |
 
-The through-line: **the expensive bugs were all in the gap between what a function claimed
-and what it did**, and most were invisible from the R code alone. Several were only caught
-by reading the format's documentation or by inspecting bytes on disk.
+## Round three — prompted by a real failing account
+
+Two surveys were reported as failing to update while plainly having responses available.
+The findings came from asking "where would a user look?" rather than from reading for bugs.
+
+| Finding | Lesson |
+|---|---|
+| A failed refresh recorded the change-detection values it had just failed to archive, so the next run compared them against themselves, decided "no change detected", and **skipped** the survey — for up to `full_sweep_days` (90) or until it changed again upstream. `consecutive_failures` was frozen at 1, so the field that exists to measure repeated failure could barely ever exceed one. | **State that means "what we successfully stored" must not be written on a path where nothing was stored.** The ADR-004 rule read the wrong way round: this made a wrong hint cost data, not freshness. |
+| `ingest()` returned `status = "error"` and nothing else — no message — from an *invisible* return value, and warned about nothing. A failing scheduled run was genuinely silent. | **A diagnosis that exists only in a table nobody knows to query has not been surfaced.** The detail was all in `meta.run_events`; nothing pointed anyone at it. Hence `ingest_failures()`. |
+| The probe error was discarded by `error = function(e) NULL`, leaving "probe request failed" as the sole trace — no status, no message. `meta.run_events.http_status` was never populated by anything at all. | The same lesson as round one's caught-error finding, and a declared column that nothing writes is a claim the schema makes and the code doesn't keep. |
+| `alchemer_responses()` documented passing `resultsperpage` through `...`, but `alchemer_fetch_all()` reset it unconditionally. It is the one knob that can get a survey under Alchemer's 30-second response timeout — the leading suspect for the original report — so it was undiagnosable as well as unusable. | Documented-and-ignored is worse than absent: it costs a diagnosis, not just a feature. |
+| Once the messages were legible, the actual cause of the reported failures showed up: `chr1()` was a bare `as.character()`. Alchemer varies the *arity* of fields it documents as scalars — `team` is one id normally, an array on a survey shared across teams — so `purrr::map_chr()` aborted the survey with `Result must be length 1, not 2`. A length-1 object was worse: it deparsed, and `list(id = "1", name = "Research")` was archived as if it were the value. | **ADR-003 says a field's shape may never fail an ingest; the helper that implements it merely assumed the shape instead of enforcing it.** A guarantee stated in an ADR and asserted nowhere in code is a guarantee only until the API varies. |
+
+The through-line across all three rounds: **the expensive bugs were all in the gap between
+what a function claimed and what it did**, and most were invisible from the R code alone.
+Several were only caught by reading the format's documentation, by inspecting bytes on
+disk, or — in round three — by asking what a user staring at a stalled survey would
+actually be able to find out. Round three also showed the ordering: the parse bug was
+only findable *after* the error text stopped being swallowed and garbled, which is an
+argument for treating diagnosability as a feature rather than a follow-up.
 
 ---
 

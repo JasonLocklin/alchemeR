@@ -17,7 +17,10 @@ cli::cli_inform(paste0(
   "{sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed."
 ))
 if (any(result$status == "error")) {
-  print(result[result$status == "error", c("survey_id", "decision", "status")])
+  # `message` is the reason, not just the fact -- without it a log says only
+  # that a survey failed. ingest_failures() is the same question asked later,
+  # against the database, once this log has scrolled away.
+  print(result[result$status == "error", c("survey_id", "http_status", "message")])
 }
 
 pub_layer()
