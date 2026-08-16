@@ -4,14 +4,7 @@ test_that("alchemer_creds errors with an actionable message when unset", {
   expect_error(alchemer_creds(), "ALCHEMER_API_TOKEN")
 })
 
-test_that("alchemer_creds prefers arguments over environment variables", {
-  withr::local_envvar(ALCHEMER_API_TOKEN = "env-token", ALCHEMER_API_SECRET = "env-secret")
-  creds <- alchemer_creds(token = "arg-token", secret = "arg-secret")
-  expect_equal(creds$token, "arg-token")
-  expect_equal(creds$secret, "arg-secret")
-})
-
-test_that("alchemer_creds reads environment variables when no argument given", {
+test_that("alchemer_creds reads environment variables", {
   withr::local_envvar(ALCHEMER_API_TOKEN = "env-token", ALCHEMER_API_SECRET = "env-secret")
   creds <- alchemer_creds()
   expect_equal(creds$token, "env-token")
@@ -48,9 +41,41 @@ test_that("an optional setting present but blank falls back to its default", {
   # result was a base URL of "https:///v5" and req_throttle() aborting with
   # "capacity must be a whole number, not a numeric NA" -- neither of which
   # names the actual problem.
-  withr::local_envvar(ALCHEMER_DOMAIN = "", ALCHEMER_RPM = "", ALCHEMER_FULL_SWEEP_DAYS = "")
+  withr::local_envvar(
+    ALCHEMER_DOMAIN = "", ALCHEMER_RPM = "", ALCHEMER_FULL_SWEEP_DAYS = "",
+    ALCHEMER_LANGUAGE = "", ALCHEMER_API_TOKEN = "T", ALCHEMER_API_SECRET = "S"
+  )
   expect_equal(alchemer_domain(), "api.alchemer.com")
   expect_equal(alchemer_rpm(), 100)
   expect_equal(alchemer_full_sweep_days(), 90)
-  expect_equal(alchemer_client(token = "T", secret = "S")$base_url, "https://api.alchemer.com/v5")
+  expect_equal(alchemer_language(), "English")
+  expect_equal(alchemer_client()$base_url, "https://api.alchemer.com/v5")
+})
+
+test_that("alchemer_client takes its whole configuration from the environment", {
+  withr::local_envvar(
+    ALCHEMER_API_TOKEN = "env-token", ALCHEMER_API_SECRET = "env-secret",
+    ALCHEMER_DOMAIN = "api.alchemer.eu", ALCHEMER_RPM = "42"
+  )
+  client <- alchemer_client()
+  expect_equal(client$token, "env-token")
+  expect_equal(client$base_url, "https://api.alchemer.eu/v5")
+  expect_equal(client$rpm, 42)
+})
+
+test_that("alchemer_language defaults to English and rejects SQL-breaking values", {
+  # It reaches a generated SQL/JSONPath expression as a bare literal, so it is
+  # validated where it is read rather than quoted at each use.
+  withr::local_envvar(ALCHEMER_LANGUAGE = NA)
+  expect_equal(alchemer_language(), "English")
+
+  withr::local_envvar(ALCHEMER_LANGUAGE = "English\") --")
+  expect_error(alchemer_language(), class = "alchemeR_config_error")
+  withr::local_envvar(ALCHEMER_LANGUAGE = "en'glish")
+  expect_error(alchemer_language(), class = "alchemeR_config_error")
+})
+
+test_that("alchemer_tz rejects a value that isn't an IANA name", {
+  withr::local_envvar(ALCHEMER_TZ = "Eastern")
+  expect_error(alchemer_tz(), class = "alchemeR_config_error")
 })

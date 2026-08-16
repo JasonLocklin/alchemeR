@@ -13,8 +13,10 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", eval = FALSE)
 
 ## Configure
 
-alchemeR reads everything from the environment, never from arguments in your
-project source. Copy
+alchemeR reads its configuration from the environment and from nowhere else.
+No function takes a token, a secret, a domain, a timezone, or a tuning value as
+an argument, so there is exactly one place any setting can come from, and a run
+behaves the same however it was started. Copy
 `system.file("extdata", "Renviron.example", package = "alchemeR")` to
 `.Renviron` (project) or `~/.Renviron` (user), and fill in your token and
 secret from **Account > Integrations > API Key**:
@@ -34,6 +36,19 @@ account's timezone. If your account is outside the US, also set
 `ALCHEMER_DOMAIN`; see `vignette("data-model")` for the regional list. Getting
 the domain wrong is, per Alchemer's own documentation, one of the most common
 causes of failed API calls.
+
+### Keeping the secret out of a file
+
+Nothing has to be written to disk. Set the variable from whatever vault you
+already use, at the top of your script:
+
+```r
+Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))
+```
+
+That works precisely *because* configuration is environment-only: alchemeR
+needs no knowledge of keyring, and the same one-liner works for any other
+secret store.
 
 ## First run
 
@@ -58,6 +73,11 @@ db_check()
 `db_status()` summarises what is stored and when it last ran. `db_check()`
 re-runs the integrity assertions `ingest()` already ran after that survey
 committed — cheap reassurance before trusting the database with everything.
+
+If `ingest()` warns that a survey failed, `ingest_failures()` says which and
+why. A failure is scoped to that one survey — rolled back whole, retried on the
+next run — so it is worth investigating but never leaves a mess behind. See
+`vignette("troubleshooting")`.
 
 ## The real thing
 

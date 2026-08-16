@@ -58,6 +58,90 @@ db_status <- function(db = alchemer_db_path()) {
   )
 }
 
+#' Surveys that are currently failing to refresh, and why
+#'
+#' The diagnostic companion to [db_status()], which reports only that the last
+#' run *had* failures. This names them: one row per survey whose most recent
+#' [ingest()] attempt failed, carrying the error message, the status code, and
+#' any failed integrity checks from that same attempt.
+#'
+#' @param db Application database directory. Defaults to [alchemer_db_path()].
+#' @return A tibble, one row per currently-failing survey (zero rows when
+#'   nothing is failing), ordered worst-first by `consecutive_failures`:
+#'
+#'   \describe{
+#'     \item{`survey_id`, `title`}{Which survey. `title` is `NA` for a survey
+#'       that has never been archived successfully.}
+#'     \item{`consecutive_failures`}{Failed attempts since the last success.
+#'       Climbing across runs means a persistent cause, not a blip.}
+#'     \item{`last_successful_refresh_at`}{How stale the archived data is --
+#'       `NA` if this survey has never succeeded. **The data as of this
+#'       timestamp is still intact**; a failed refresh never damages it.}
+#'     \item{`last_attempt_at`, `last_error_run_id`, `last_error_phase`}{When
+#'       it last tried, under which `meta.runs` id, and at which phase
+#'       (`"refresh"`, or `"probe"` for a change-detection request that failed
+#'       without stopping the refresh).}
+#'     \item{`http_status`}{The HTTP status when the request itself failed, or
+#'       Alchemer's own error code when it answered 200 with
+#'       `result_ok: false` -- Alchemer's codes are HTTP-shaped (401, 500), so
+#'       both read the same way. `NA` for a connection failure, which never got
+#'       a status, or an integrity failure, which made no request.}
+#'     \item{`message`}{The full error, including the redacted request path.
+#'       `vignette("troubleshooting")` decodes the recurring shapes.}
+#'     \item{`failed_checks`}{Integrity assertions that failed on that attempt
+#'       (ADR-006), `check_name: message` and semicolon-separated. Populated
+#'       only when the failure *was* an integrity failure.}
+#'   }
+#' @details
+#' Reads `meta.survey_state` -- written outside the refresh transaction
+#' precisely so a failure's bookkeeping survives its own rollback (ADR-007) --
+#' joined to the matching `meta.run_events` and `meta.integrity_checks` rows.
+#' Those tables remain the complete log; this is the standing question asked of
+#' them. Notably, a survey listed here is *failing now*: it drops off by itself
+#' on the next successful refresh.
+#'
+#' A survey whose probe fails but whose refresh then succeeds is **not** listed,
+#' because it is not failing -- change detection just fell back to refreshing it
+#' anyway. Those events are in `meta.run_events` with `phase = 'probe'`.
+#' @seealso [db_status()] for the run-level summary, [db_check()] to re-run the
+#'   integrity assertions account-wide.
+#' @export
+ingest_failures <- function(db = alchemer_db_path()) {
+  con <- alchemer_db(db, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+
+  tibble::as_tibble(DBI::dbGetQuery(con, glue::glue(
+    "WITH failing AS (
+       SELECT survey_id, consecutive_failures,
+              last_refresh_started_at, last_successful_refresh_at
+       FROM {ducklake_alias}.meta.survey_state
+       WHERE consecutive_failures > 0 OR last_successful_refresh_at IS NULL
+     ),
+     errors AS (
+       SELECT survey_id, run_id, phase, http_status, message,
+              ROW_NUMBER() OVER (PARTITION BY survey_id ORDER BY finished_at DESC) AS rn
+       FROM {ducklake_alias}.meta.run_events
+       WHERE status = 'error' AND survey_id IS NOT NULL
+     ),
+     checks AS (
+       SELECT run_id, survey_id,
+              string_agg(check_name || ': ' || COALESCE(message, ''), '; ') AS failed_checks
+       FROM {ducklake_alias}.meta.integrity_checks
+       WHERE NOT passed AND survey_id IS NOT NULL
+       GROUP BY run_id, survey_id
+     )
+     SELECT f.survey_id, s.title, f.consecutive_failures,
+            f.last_successful_refresh_at, f.last_refresh_started_at AS last_attempt_at,
+            e.run_id AS last_error_run_id, e.phase AS last_error_phase,
+            e.http_status, e.message, c.failed_checks
+     FROM failing f
+     LEFT JOIN {ducklake_alias}.raw.surveys s ON s.survey_id = f.survey_id
+     LEFT JOIN errors e ON e.survey_id = f.survey_id AND e.rn = 1
+     LEFT JOIN checks c ON c.survey_id = e.survey_id AND c.run_id = e.run_id
+     ORDER BY f.consecutive_failures DESC, f.survey_id"
+  )))
+}
+
 #' Compact the application database
 #'
 #' Flushes inlined commits to Parquet, merges the small files repeated
@@ -160,11 +244,9 @@ cleanup_files <- function(con) {
 #'   its `raw.surveys` record) is removed.
 #' @param before_date If supplied, `raw.responses` rows with
 #'   `date_submitted` earlier than this are removed, across every survey.
-#'   Interpreted as a calendar date in `tz` (midnight local time);
+#'   Interpreted as a calendar date in `ALCHEMER_TZ` (midnight local time);
 #'   `date_submitted` itself is parsed using its own per-row EST/EDT suffix,
 #'   so the comparison is DST-correct without guessing at a fixed offset.
-#' @param tz Timezone `before_date` is read in. Defaults to `ALCHEMER_TZ`,
-#'   then the machine's own timezone (see [alchemer_tz()]).
 #' @details
 #' Removing the rows is only the first of four steps, because a `DELETE` alone
 #' leaves the values recoverable from disk in three separate places. Each was
@@ -195,9 +277,8 @@ cleanup_files <- function(con) {
 #' its `sqlite_query()` pass-through rejects statements that return no rows).
 #' @return Invisibly, `TRUE`.
 #' @export
-expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL,
-                    tz = NULL) {
-  tz <- alchemer_tz(tz) # validated even when supplied: it reaches SQL as a literal
+expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NULL) {
+  tz <- alchemer_tz() # validated by its reader: it reaches SQL as a bare literal
   if (is.null(survey_id) && is.null(before_date)) {
     cli::cli_abort("Supply survey_id or before_date.", class = "alchemeR_config_error")
   }
@@ -272,6 +353,14 @@ expunge <- function(db = alchemer_db_path(), survey_id = NULL, before_date = NUL
            )"
         ))
       }
+      # pub_layer() skips a survey whose meta.pub_state row still matches what
+      # `raw` holds (ADR-017), and this function has just edited both layers
+      # behind its back. Clearing the whole table -- not just the expunged
+      # survey's row -- is deliberate: expunge() is a rare, explicit operation,
+      # a full rebuild of `pub` from the post-expunge `raw` is exactly what
+      # should follow it, and one unconditional statement needs no reasoning
+      # about which surveys the before_date branch happened to touch.
+      DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.pub_state"))
       DBI::dbExecute(con, "COMMIT")
     },
     error = function(e) {

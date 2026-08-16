@@ -9,20 +9,31 @@
 #' All network access is made through a client object, so that ingestion can
 #' be tested against a fixture-backed client without credentials (ADR-010).
 #'
-#' @param token,secret Passed to [alchemer_creds()].
-#' @param domain Passed to [alchemer_domain()].
-#' @param rpm Passed to [alchemer_rpm()].
+#' Takes no arguments: the token, secret, domain, and throttle all come from
+#' the environment and nowhere else (ADR-019). See `vignette("getting-started")`
+#' for the variables, and for how to set a secret from a vault without writing
+#' it into project source.
+#'
 #' @return An `alchemer_client` object.
 #' @export
-alchemer_client <- function(token = NULL, secret = NULL, domain = NULL, rpm = NULL) {
-  creds <- alchemer_creds(token, secret)
-  domain <- alchemer_domain(domain)
+alchemer_client <- function() {
+  creds <- alchemer_creds()
+  new_alchemer_client(creds$token, creds$secret, alchemer_domain(), alchemer_rpm())
+}
+
+# The constructor proper, with everything passed explicitly. Not exported and
+# not part of the configuration story: it exists for the two callers that
+# legitimately have credentials in hand rather than in the environment -- the
+# deprecated shims, whose token/secret_key arguments predate this package's
+# configuration and must keep working, and tests, which build fixture-backed
+# clients with credentials that were never real (ADR-010).
+new_alchemer_client <- function(token, secret, domain = alchemer_domain(), rpm = alchemer_rpm()) {
   structure(
     list(
-      token = creds$token,
-      secret = creds$secret,
+      token = token,
+      secret = secret,
       base_url = paste0("https://", domain, "/v5"),
-      rpm = alchemer_rpm(rpm),
+      rpm = rpm,
       # An environment, not a plain counter: the client is passed by value, so
       # a numeric field could never be incremented in a way the caller sees.
       # This is what makes meta.runs.n_requests observable (ADR-011's request
@@ -176,11 +187,19 @@ page_is_complete <- function(resp) {
 #' at `resultsperpage = 500` (the documented maximum).
 #'
 #' @inheritParams alchemer_fetch
-#' @param resultsperpage Page size, max 500.
+#' @param resultsperpage Default page size, max 500. A `resultsperpage` in
+#'   `query` takes precedence.
 #' @return A list of the combined `data` elements across every page.
 #' @keywords internal
 alchemer_fetch_all <- function(client, path, query = list(), resultsperpage = 500) {
-  query$resultsperpage <- resultsperpage
+  # A caller-supplied page size wins. This used to overwrite `query`
+  # unconditionally, so alchemer_responses()' documented `...` passthrough
+  # silently discarded a `resultsperpage`. Page size is not only politeness:
+  # Alchemer times a response out at 30 seconds, so a survey wide enough that
+  # 500 responses take longer than that to generate is only fetchable in
+  # smaller pages -- and being unable to ask for them made that diagnosis
+  # impossible to even test.
+  query$resultsperpage <- query$resultsperpage %||% resultsperpage
   req <- alchemer_request(client, path, query)
 
   resps <- tryCatch(

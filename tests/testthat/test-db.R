@@ -203,3 +203,73 @@ test_that("alchemer_db(read_only = TRUE) can read an existing database", {
   DBI::dbDisconnect(con2, shutdown = TRUE)
   expect_equal(nrow(out), 1)
 })
+
+# --- Application schema versioning (ADR-018) --------------------------------
+
+test_that("a fresh database is stamped with the current major.minor", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(db_schema_version(con), list(major = schema_major, minor = schema_minor))
+})
+
+test_that("a database stamped with the pre-split single version reads as major 1", {
+  # Databases written before the split hold one `version INTEGER`. Every
+  # version stamped under that scheme was a publication-layer change, so N
+  # becomes 1.N -- and the caller sees an ordinary minor difference, not an
+  # incompatible archive.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "DROP TABLE alchemer.meta.schema_version")
+  DBI::dbExecute(con, "CREATE TABLE alchemer.meta.schema_version (version INTEGER)")
+  DBI::dbExecute(con, "INSERT INTO alchemer.meta.schema_version VALUES (1)")
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  con <- alchemer_db(dir)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(db_schema_version(con), list(major = 1L, minor = 1L))
+  expect_silent(assert_schema_compatible(con, dir))
+})
+
+test_that("reopening a database does not restamp a version that differs from the code", {
+  # ensure_schema() must not quietly bring a database up to the current
+  # version: the difference is the signal the callers act on.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  stamp_schema_version(con, 1L, 99L)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  con <- alchemer_db(dir)
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE), add = TRUE)
+  expect_equal(db_schema_version(con)$minor, 99L)
+})
+
+test_that("a major version difference stops both writers, in either direction", {
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  stamp_schema_version(con, schema_major + 1L, schema_minor)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_error(pub_layer(dir), class = "alchemeR_schema_version_error")
+  expect_error(
+    ingest(db = dir, client = ingest_test_client()), class = "alchemeR_schema_version_error"
+  )
+
+  con <- alchemer_db(dir)
+  stamp_schema_version(con, schema_major - 1L, schema_minor)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  expect_error(pub_layer(dir), class = "alchemeR_schema_version_error")
+})
+
+test_that("a database this refuses to write to can still be inspected", {
+  # Being told to archive and rebuild is exactly when someone needs to look
+  # inside first, so the assertion lives in the writers, not in the connection.
+  dir <- withr::local_tempdir()
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "INSERT INTO alchemer.raw.surveys (survey_id, title) VALUES ('1', 'T')")
+  stamp_schema_version(con, schema_major + 1L, schema_minor)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_no_error(alchemer_db(dir, read_only = TRUE))
+  expect_equal(db_status(dir)$n_surveys, 1)
+})

@@ -320,6 +320,14 @@ falls). ~100 surveys ⇒ ~100 requests per run.
 an undetected change could persist, which is what makes every hint above optional for
 correctness.
 
+**A failed refresh does not advance the hints.** They describe the state that was
+successfully archived, and on a failure nothing was. Recording what a failed refresh saw
+makes the next run compare those values against themselves, find no change, and skip the
+survey — which turns "this hint was wrong" into missing data rather than late data, the
+one outcome this ADR exists to prevent. So a failure leaves `last_modified_on` and the
+probe pair at their last successful values, and the difference the next run sees is what
+retries it. See round three in §9.
+
 ## ADR-005 — Deletions are flagged by set difference during a full refresh
 
 > **Amended by ADR-013 (2026-08-13):** merge instead of replace. The flagging rule below
@@ -597,6 +605,185 @@ actionable error every pipeline function already gives when it's unset -- is now
 for exactly this: the connect snippet's first line uses it, and a copy-pasted example
 that calls an internal function is worse than the thing this ADR set out to fix.
 
+## ADR-017 — `pub_layer()` rebuilds a survey only when its sources moved
+
+**Date: 2026-08-14.**
+
+**Decision.** `pub_layer()` records, per survey, a **watermark** of the `raw` rows it built
+from and the settings it built with (`meta.pub_state`), and skips any survey where both
+still match. A survey that is rebuilt is still rebuilt *whole*, in one transaction —
+there is no row-level or partial update of `pub`. This is ADR-013's reasoning ("merge,
+don't replace") applied to the layer above it, arrived at the same way: by measuring.
+
+**Why.** `pub_layer()` rebuilt every survey in the account on every run, closed surveys
+with no activity since 2023 included. *Measured* on a synthetic 50-survey, 27k-response,
+543k-answer archive:
+
+| Run | Before | After | Snapshots after |
+|---|---|---|---|
+| Full build | 35s | 17.7s | 51 |
+| Nothing changed upstream | 43s | 0.79s | 1 |
+| 3 of 50 surveys changed | 43s | 2.3s | 4 |
+
+51 snapshots for a 50-survey build is the whole of the second change visible in one
+number: one transaction per survey, plus one for `pub.surveys`.
+
+The idle run being *slower* than the cold one, before, is not noise: each re-run left
+another generation of delete files behind (254 → 455 → 656 Parquet files over three
+identical runs), which is ADR-013's write amplification in the `pub` schema.
+
+*Verified* rather than assumed: after an incremental run, `pub.answers` matches a
+`force = TRUE` full rebuild of the same `raw` exactly — same row count, same content
+hash across all 543,280 rows. Skipping work changed nothing about the result.
+
+**The cost was never in the rows.** The per-stage breakdown is what shaped this design:
+writing 1,000 question rows cost 9.0s while writing 543,200 answer rows cost 13.1s, and
+the single most expensive stage — 15.9s — was regenerating the wide views, which write no
+data at all. Every statement outside a transaction is its own DuckLake snapshot, and a
+snapshot costs a catalog write regardless of how many rows it carries; one run was ~500 of
+them. So each survey's statements are now grouped into one transaction. Measured on its
+own, before the skipping was added, that change alone took a full rebuild from 778
+snapshots and 43s to 128 and 25s — and the same transaction is what makes the
+`meta.pub_state` row commit atomically with the rows it describes.
+
+**How a change is detected.** Three signals per source table, because there are three ways
+a row can change and no one column catches all of them:
+
+| Signal | Catches | Missed without it |
+|---|---|---|
+| `max(ingested_at)` | inserts and edits | everything |
+| `max(deleted_detected_at)` | a row *flagged* deleted | flagging sets only `is_deleted`/`deleted_detected_at`, so `ingested_at` never moves |
+| `count(*)` | a row removed outright | `on_vanished = "delete"` rows, and `expunge()` |
+
+`raw.surveys` additionally contributes its columns **by value** — it is one row per survey,
+so reading the real title/status/type/`modified_on`/`is_deleted` costs nothing and removes
+that table's dependence on bookkeeping being stamped correctly. It earns its place: the
+title is what the wide view is *named* after, so a missed retitle strands a view under a
+name no longer in `pub.surveys`. Doing the same for responses would mean reading every
+answer to decide whether to read every answer.
+
+**This rests on ADR-013.** `ingest()` merges rather than replaces, so `ingested_at` advances
+only for rows that actually changed — the property asserted by *"re-refreshing unchanged
+data rewrites nothing"* in `test-ingest.R`. Were that to regress to replace-wholesale,
+every watermark would move every run and this degrades to the old behaviour: slow, never
+wrong. That is the direction every failure mode here points.
+
+**Consequences and traps.**
+
+- Skipping is decided per survey, but `pub.surveys` is rebuilt unconditionally for every
+  survey considered (0.17s for 50). Survey-level facts can never be the thing that goes
+  stale while the expensive tables are skipped.
+- The watermark is read **once, before any rebuild transaction opens**, and recorded
+  verbatim. A rebuild's own transaction can then only ever see a snapshot at or newer than
+  the one measured, so a concurrent `ingest()` costs at worst one redundant rebuild next
+  run. Recording it *after* would invert this into skipping a real change forever.
+- `language`, `tz`, `wide_views`, and the package version are compared as well as the
+  watermark: identical input still produces different output under a different setting.
+  Without `wide_views` in that comparison, a run with `wide_views = FALSE` would mark
+  surveys built and a later `TRUE` run would never create the views.
+- `expunge()` edits `raw` and `pub` behind `pub_layer()`'s back, so it clears
+  `meta.pub_state` entirely — a full rebuild from the post-expunge `raw` is exactly what
+  should follow it.
+- Unknown values (`NA` on either side of a comparison) always fall to the rebuild side. An
+  unknown can never be evidence that a rebuild is unnecessary.
+
+## ADR-018 — The application schema is versioned `major.minor`, and the halves mean different things
+
+**Date: 2026-08-14.**
+
+**Decision.** `meta.schema_version` holds a **major** and a **minor** number, and they are
+acted on differently because the two layers are worth different amounts.
+
+| Bump | When | What happens |
+|---|---|---|
+| **minor** | `pub`'s tables, or the SQL that fills them, change | `pub_layer()` drops the whole `pub` schema, recreates it from the current DDL, and rebuilds every survey. Automatic; nothing is lost. |
+| **major** | `raw`'s layout or meaning changes, or any other change an existing database can't be carried across | `ingest()` **and** `pub_layer()` refuse to run. The directory must be archived and rebuilt from the API, or migrated by hand and restamped. |
+
+**Why the asymmetry.** `raw` is the archive, and once Alchemer has moved on it cannot be
+regenerated — so a change this code doesn't understand must stop, loudly, before it writes.
+`pub` is derived from `raw` alone (ADR-008), so the same class of change there needs no
+migration at all: throwing the layer away and rebuilding it is always available, and is
+strictly more reliable than any migration anyone would write.
+
+**What this replaces.** ADR-017's `meta.pub_state` originally carried the alchemeR package
+version, so any upgrade forced a full rebuild. That is both too eager (a patch release that
+never touches `pub` costs a full rebuild) and too weak (it re-fills tables but cannot change
+their *shape* — `CREATE TABLE IF NOT EXISTS` leaves a column added by an older version in
+place forever). The minor version replaces it on both counts: it fires only when someone
+says the pub layer changed, and it invalidates structure as well as content.
+
+**Consequences and traps.**
+
+- The assertion lives in `ingest()` and `pub_layer()`, deliberately **not** in
+  `alchemer_db()`. `db_status()`, `db_check()`, and a plain read-only connection all still
+  work on a database the writers refuse — being told to archive and rebuild is exactly when
+  someone needs to look inside it first.
+- A major difference fails in **both** directions. A database older than the code may be
+  missing structure the code assumes; one newer may carry meanings this version doesn't
+  know. Neither can be guessed at.
+- `ensure_schema()` stamps only a database that has never been stamped. It must never
+  quietly bring a version up to the current one: the difference *is* the signal.
+- The minor reset stamps the new version in the same transaction as the reset, before any
+  survey is rebuilt, which makes it resumable. An interrupted post-bump rebuild doesn't
+  reset a second time; it finds an empty `meta.pub_state` and finishes the surveys left.
+- The reset covers `meta.pub_state` too. It lives in `meta` but belongs to the publication
+  layer, and its own columns can drift exactly as `pub`'s can.
+- A database stamped under the pre-split single `version N` reads as major 1, minor N —
+  every version stamped under that scheme was a publication-layer change.
+
+## ADR-019 — Configuration comes from the environment, and from nowhere else
+
+**Date: 2026-08-15.**
+
+**Decision.** Every setting is read from an `ALCHEMER_*` environment variable, at the point
+it is used, and **no function accepts it as an argument**. `alchemer_client()` takes no
+arguments at all. `ingest()` lost `full_sweep_days` and `rpm`; `pub_layer()` lost `tz` and
+`language`; `expunge()` lost `tz`; every reader in `config.R` lost its override parameter.
+`language` gains a variable it never had, `ALCHEMER_LANGUAGE`, so that the rule has no
+exceptions.
+
+**Why.** A setting that can arrive two ways has to be traced two ways. With one source,
+"why did this run behave differently?" is always answered by the environment it ran in —
+which is also the only thing a cron entry, a container, and an interactive session
+genuinely share. The arguments were never pulling their weight: they existed so that a
+`keyring` user could inject a secret without writing it to source, and
+
+```r
+Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))
+```
+
+does that in one line, for any vault, without the package knowing that vaults exist.
+
+**What stays an argument, and why it isn't an exception.**
+
+- `db`. It is the *operand* — which database this call acts on — not a setting, and it
+  still defaults to `alchemer_db_path()`. Every test would otherwise have to mutate global
+  environment state to point at a temp directory.
+- `client` on `ingest()`. The injection point ADR-010 requires for testing without
+  credentials.
+- `surveys`, `force`, `wide_views`, `include`, `dry_run`. What this call should do, not how
+  the deployment is configured.
+- `dest_con`, `schema`, `tables` on the load functions. The destination connection is the
+  caller's to build — the package never opens it — so its schema belongs beside it. The
+  boundary is: alchemeR's own configuration is environmental; the analytics database is the
+  script's business, and the example script reads *its* settings from the environment too.
+- `token`/`secret_key` on the three deprecated shims. A deprecated function exists so that
+  calls written against the old API keep working, and the old API took credentials. They
+  fall back to the environment when unsupplied, and they go away in 2.0.0 with the shims.
+
+**Consequences and traps.**
+
+- Validation moves to the reader. `ALCHEMER_TZ` is checked against `OlsonNames()` and
+  `ALCHEMER_LANGUAGE` against a character allowlist *where they are read*, which is
+  strictly better than validating an argument at each call site: both reach generated SQL
+  as bare literals (ADR-014, ADR-008), and there is now exactly one place either can enter.
+- Tests configure the way production does, with `withr::local_envvar()`. A test that passed
+  `tz = "UTC"` was quietly exercising a path no scheduled run ever took.
+- `new_alchemer_client()` is the unexported constructor with everything passed explicitly.
+  It is not a back door into the configuration story: it exists for the two callers that
+  legitimately hold credentials rather than read them — the deprecated shims, and fixtures
+  whose credentials were never real.
+
 ---
 
 # 5. Why DuckLake, and not Iceberg
@@ -775,9 +962,26 @@ bug that will recur in this codebase, and the test suite now pins each one.
 | `lint_package()` *crashed* rather than linting, so "lintr clean" was never verifiable. | Verify that your verification runs. |
 | `expunge()` and `expire_history()` didn't actually reclaim files; maintenance never ran at all (ADR-015, §6). | Functions that document an effect must be tested for the effect, not the call. |
 
-The through-line: **the expensive bugs were all in the gap between what a function claimed
-and what it did**, and most were invisible from the R code alone. Several were only caught
-by reading the format's documentation or by inspecting bytes on disk.
+## Round three — prompted by a real failing account
+
+Two surveys were reported as failing to update while plainly having responses available.
+The findings came from asking "where would a user look?" rather than from reading for bugs.
+
+| Finding | Lesson |
+|---|---|
+| A failed refresh recorded the change-detection values it had just failed to archive, so the next run compared them against themselves, decided "no change detected", and **skipped** the survey — for up to `full_sweep_days` (90) or until it changed again upstream. `consecutive_failures` was frozen at 1, so the field that exists to measure repeated failure could barely ever exceed one. | **State that means "what we successfully stored" must not be written on a path where nothing was stored.** The ADR-004 rule read the wrong way round: this made a wrong hint cost data, not freshness. |
+| `ingest()` returned `status = "error"` and nothing else — no message — from an *invisible* return value, and warned about nothing. A failing scheduled run was genuinely silent. | **A diagnosis that exists only in a table nobody knows to query has not been surfaced.** The detail was all in `meta.run_events`; nothing pointed anyone at it. Hence `ingest_failures()`. |
+| The probe error was discarded by `error = function(e) NULL`, leaving "probe request failed" as the sole trace — no status, no message. `meta.run_events.http_status` was never populated by anything at all. | The same lesson as round one's caught-error finding, and a declared column that nothing writes is a claim the schema makes and the code doesn't keep. |
+| `alchemer_responses()` documented passing `resultsperpage` through `...`, but `alchemer_fetch_all()` reset it unconditionally. It is the one knob that can get a survey under Alchemer's 30-second response timeout — the leading suspect for the original report — so it was undiagnosable as well as unusable. | Documented-and-ignored is worse than absent: it costs a diagnosis, not just a feature. |
+| Once the messages were legible, the actual cause of the reported failures showed up: `chr1()` was a bare `as.character()`. Alchemer varies the *arity* of fields it documents as scalars — `team` is one id normally, an array on a survey shared across teams — so `purrr::map_chr()` aborted the survey with `Result must be length 1, not 2`. A length-1 object was worse: it deparsed, and `list(id = "1", name = "Research")` was archived as if it were the value. | **ADR-003 says a field's shape may never fail an ingest; the helper that implements it merely assumed the shape instead of enforcing it.** A guarantee stated in an ADR and asserted nowhere in code is a guarantee only until the API varies. |
+
+The through-line across all three rounds: **the expensive bugs were all in the gap between
+what a function claimed and what it did**, and most were invisible from the R code alone.
+Several were only caught by reading the format's documentation, by inspecting bytes on
+disk, or — in round three — by asking what a user staring at a stalled survey would
+actually be able to find out. Round three also showed the ordering: the parse bug was
+only findable *after* the error text stopped being swallowed and garbled, which is an
+argument for treating diagnosability as a feature rather than a follow-up.
 
 ---
 

@@ -4,19 +4,14 @@
 \alias{alchemer_creds}
 \title{Alchemer API credentials}
 \usage{
-alchemer_creds(token = NULL, secret = NULL)
-}
-\arguments{
-\item{token}{API token. Defaults to \code{Sys.getenv("ALCHEMER_API_TOKEN")}.}
-
-\item{secret}{API secret. Defaults to \code{Sys.getenv("ALCHEMER_API_SECRET")}.}
+alchemer_creds()
 }
 \value{
 A list with \code{token} and \code{secret}.
 }
 \description{
 Reads \code{ALCHEMER_API_TOKEN} and \code{ALCHEMER_API_SECRET} from the environment.
-Either may be supplied directly as an argument instead (so, e.g., \code{keyring}
-users can source the secret without ever writing it to project source).
+To keep a secret out of project source, set the variable from a vault in
+your script: \code{Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get(...))}.
 }
 \keyword{internal}

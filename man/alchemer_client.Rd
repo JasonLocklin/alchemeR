@@ -4,14 +4,7 @@
 \alias{alchemer_client}
 \title{Build an Alchemer API client}
 \usage{
-alchemer_client(token = NULL, secret = NULL, domain = NULL, rpm = NULL)
-}
-\arguments{
-\item{token, secret}{Passed to \code{\link[=alchemer_creds]{alchemer_creds()}}.}
-
-\item{domain}{Passed to \code{\link[=alchemer_domain]{alchemer_domain()}}.}
-
-\item{rpm}{Passed to \code{\link[=alchemer_rpm]{alchemer_rpm()}}.}
+alchemer_client()
 }
 \value{
 An \code{alchemer_client} object.
@@ -19,4 +12,10 @@ An \code{alchemer_client} object.
 \description{
 All network access is made through a client object, so that ingestion can
 be tested against a fixture-backed client without credentials (ADR-010).
+}
+\details{
+Takes no arguments: the token, secret, domain, and throttle all come from
+the environment and nowhere else (ADR-019). See \code{vignette("getting-started")}
+for the variables, and for how to set a secret from a vault without writing
+it into project source.
 }

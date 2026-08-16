@@ -14,7 +14,10 @@ test_that("alchemer_request builds the credentialed URL against the right domain
 })
 
 test_that("alchemer_client respects ALCHEMER_DOMAIN for regional accounts", {
-  client <- alchemer_client(token = "T", secret = "S", domain = "api.alchemer.eu")
+  withr::local_envvar(
+    ALCHEMER_API_TOKEN = "T", ALCHEMER_API_SECRET = "S", ALCHEMER_DOMAIN = "api.alchemer.eu"
+  )
+  client <- alchemer_client()
   httptest2::without_internet({
     req <- alchemer_request(client, "survey")
     httptest2::expect_GET(
@@ -117,6 +120,27 @@ test_that("alchemer_fetch_all stops on an empty page when total_pages/page are a
   ))
   out <- alchemer_fetch_all(test_client(), "contactlist")
   expect_length(out, 2)
+})
+
+test_that("a caller-supplied resultsperpage survives instead of being overwritten", {
+  # alchemer_responses() documents passing `resultsperpage` through `...`, but
+  # alchemer_fetch_all() unconditionally reset it to 500, so it silently did
+  # nothing. It is the one knob that can get a very wide survey under
+  # Alchemer's 30-second response timeout, so "documented but ignored" was the
+  # worst possible state for it.
+  seen <- NULL
+  httr2::local_mocked_responses(function(req) {
+    seen <<- httr2::url_parse(req$url)$query$resultsperpage
+    httr2::response_json(status_code = 200, body = list(
+      result_ok = TRUE, page = 1, total_pages = 1, data = list(list(id = "1"))
+    ))
+  })
+
+  alchemer_fetch_all(test_client(), "survey", query = list(resultsperpage = 50))
+  expect_equal(seen, "50")
+
+  alchemer_fetch_all(test_client(), "survey")
+  expect_equal(seen, "500")
 })
 
 test_that("alchemer_fetch_all raises a typed, code-bearing error on result_ok: false mid-pagination", {

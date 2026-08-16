@@ -4,10 +4,7 @@
 \alias{alchemer_domain}
 \title{Alchemer regional API base domain}
 \usage{
-alchemer_domain(domain = NULL)
-}
-\arguments{
-\item{domain}{Domain override. Defaults to \code{Sys.getenv("ALCHEMER_DOMAIN")}.}
+alchemer_domain()
 }
 \value{
 A single string, e.g. \code{"api.alchemer.com"}.

@@ -4,7 +4,28 @@
 # declared here. Every `raw` column is VARCHAR or JSON (ADR-003); typing
 # happens only in `pub`, built separately by pub_layer().
 
-schema_version <- 1L
+# The application database's schema version, major.minor (ADR-018). The two
+# halves mean different things because the two layers are worth different
+# amounts: `raw` is the archive and cannot be regenerated once the API has
+# moved on, while `pub` is derived and can always be thrown away and rebuilt.
+#
+# major -- the archival layer. Bump when `raw`'s layout or the meaning of its
+#   columns changes, or for any other change an existing database cannot simply
+#   be carried across. ingest() and pub_layer() both refuse to run against a
+#   database stamped with a different major: it must be archived and rebuilt
+#   from the API, or migrated by hand and restamped. There is deliberately no
+#   automatic migration -- guessing at how to reshape an archive is exactly the
+#   kind of judgement call ADR-003 keeps out of the archival path.
+# minor -- the publication layer. Bump when `pub`'s tables, or the SQL that
+#   fills them, change. Nothing at risk, so nothing to throw away: pub_layer()
+#   drops and recreates the `pub` schema and rebuilds every survey once. This
+#   is what stops `pub` drifting -- a table created by an older version keeps
+#   its old columns forever otherwise, since the DDL is CREATE IF NOT EXISTS.
+#
+# A database stamped with the pre-split single `version` N reads as major 1,
+# minor N: every version so far has been a publication-layer change.
+schema_major <- 1L
+schema_minor <- 3L
 
 raw_tables <- list(
   surveys = "
@@ -77,7 +98,20 @@ meta_tables <- list(
     load_id VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP,
     status VARCHAR, destination VARCHAR, n_tables INTEGER, n_rows INTEGER,
     tables JSON, message VARCHAR",
-  schema_version = "version INTEGER"
+  # One row per survey built into `pub`, recording what it was built *from* and
+  # *with* (ADR-017). pub_layer() rebuilds a survey only when one of these no
+  # longer matches, so a run where nothing changed upstream does no work.
+  # Every column is part of that comparison: `source_watermark` covers the raw
+  # rows, and `language`/`tz`/`wide_views` cover the build, since each of them
+  # produces different output from identical input.
+  #
+  # A change to the pub SQL itself is *not* tracked here. That is what the
+  # schema minor version is for (ADR-018): it invalidates the whole layer at
+  # once, table shapes included, which a per-survey column could never do.
+  pub_state = "
+    survey_id VARCHAR, source_watermark VARCHAR, language VARCHAR, tz VARCHAR,
+    wide_views BOOLEAN, built_at TIMESTAMP",
+  schema_version = "major INTEGER, minor INTEGER"
 )
 
 # Typed, language-resolved (ADR-008); built by pub_layer(), never by
@@ -177,17 +211,139 @@ ensure_schema <- function(con) {
   create_tables(con, "meta", meta_tables)
   create_tables(con, "pub", pub_tables)
 
-  current <- DBI::dbGetQuery(
-    con,
-    glue::glue("SELECT version FROM {ducklake_alias}.meta.schema_version")
+  split_schema_version_table(con)
+  if (is.null(db_schema_version(con))) {
+    stamp_schema_version(con, schema_major, schema_minor)
+  }
+  # Nothing else is stamped here, and in particular nothing is *re*-stamped: a
+  # version that no longer matches the code is a fact the callers need to see.
+  # Acting on it belongs to them -- pub_layer() rebuilds on a minor difference,
+  # and both writers refuse to run on a major one (assert_schema_compatible()).
+  invisible(TRUE)
+}
+
+# meta.schema_version held a single `version INTEGER` before the split into
+# major/minor. The table holds one row of one number, so it is recreated in the
+# new shape rather than ALTERed -- less machinery, and the only thing worth
+# preserving (the number) is read first. Every version stamped under the old
+# scheme was a publication-layer change, so N becomes major 1, minor N.
+split_schema_version_table <- function(con) {
+  columns <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT column_name FROM information_schema.columns
+     WHERE table_catalog = {DBI::dbQuoteString(con, ducklake_alias)}
+       AND table_schema = 'meta' AND table_name = 'schema_version'"
+  ))$column_name
+  if (!("version" %in% columns) || "major" %in% columns) {
+    return(invisible(FALSE))
+  }
+
+  old <- DBI::dbGetQuery(
+    con, glue::glue("SELECT version FROM {ducklake_alias}.meta.schema_version")
   )$version
-  if (length(current) == 0) {
+  DBI::dbExecute(con, glue::glue("DROP TABLE {ducklake_alias}.meta.schema_version"))
+  DBI::dbExecute(con, glue::glue(
+    "CREATE TABLE {ducklake_alias}.meta.schema_version ({meta_tables$schema_version})"
+  ))
+  if (length(old) > 0) {
+    stamp_schema_version(con, 1L, as.integer(old[1]))
+  }
+  invisible(TRUE)
+}
+
+# NULL for a database that has never been stamped, which is not an error: a
+# read-only caller can meet one, and so can a database created before the
+# version table was populated.
+db_schema_version <- function(con) {
+  stamped <- DBI::dbGetQuery(
+    con, glue::glue("SELECT major, minor FROM {ducklake_alias}.meta.schema_version")
+  )
+  if (nrow(stamped) == 0) {
+    return(NULL)
+  }
+  list(major = as.integer(stamped$major[1]), minor = as.integer(stamped$minor[1]))
+}
+
+stamp_schema_version <- function(con, major, minor) {
+  DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.meta.schema_version"))
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO {ducklake_alias}.meta.schema_version VALUES ({as.integer(major)}, {as.integer(minor)})"
+  ))
+  invisible(TRUE)
+}
+
+# Called by the two functions that write data -- ingest() and pub_layer() --
+# before they do anything else (ADR-018). Deliberately *not* called from
+# alchemer_db(), so db_status(), db_check(), and a plain read-only connection
+# all still work on a database this refuses to write to: being told to archive
+# and rebuild is precisely when someone needs to look inside it first.
+#
+# Any difference in the major version fails, in both directions. A database
+# older than the code may be missing structure the code assumes; one newer than
+# the code may have been written with meanings this version doesn't know. Both
+# are unsafe to write to, and neither can be guessed at automatically.
+assert_schema_compatible <- function(con, db) {
+  stamped <- db_schema_version(con)
+  if (is.null(stamped) || identical(stamped$major, schema_major)) {
+    return(invisible(TRUE))
+  }
+  cli::cli_abort(
+    c(
+      "The application database at {.path {db}} is schema version
+       {stamped$major}.{stamped$minor}; this version of alchemeR writes
+       {schema_major}.{schema_minor}.",
+      "x" = "The major version differs, which means the archival ({.code raw}) layer's
+             layout or meaning is not the one this code expects. There is no automatic
+             migration -- reshaping an archive on a guess is exactly what {.code raw}
+             exists to prevent.",
+      "i" = "Archive this directory, point {.envvar ALCHEMER_DB} at a fresh one, and
+             rebuild it with {.run alchemeR::ingest()}.",
+      "i" = "Or migrate it by hand and restamp {.code meta.schema_version}. Only
+             {.code raw} and {.code meta} hold anything unrecoverable; {.code pub} is
+             rebuilt from {.code raw} either way."
+    ),
+    class = "alchemeR_schema_version_error", call = NULL
+  )
+}
+
+# Drops everything in `pub` and recreates it from the current DDL. Safe in a way
+# no other schema reset in this package would be, and for one specific reason:
+# `pub` is derived from `raw` alone (ADR-008), so the rows discarded here are
+# exactly reproducible. Views go first: they are only ever wide_* pivots over
+# the tables about to be dropped, and pub_layer() regenerates them per survey.
+#
+# Everything found in the schema is dropped, not just the tables named in
+# pub_tables, so a table left behind by an older version -- the drift this
+# exists to remove -- goes too.
+reset_pub_schema <- function(con) {
+  objects <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT table_name, table_type FROM information_schema.tables
+     WHERE table_catalog = {DBI::dbQuoteString(con, ducklake_alias)}
+       AND table_schema = 'pub'"
+  ))
+  views <- objects$table_name[objects$table_type == "VIEW"]
+  tables <- objects$table_name[objects$table_type != "VIEW"]
+
+  for (view in views) {
     DBI::dbExecute(con, glue::glue(
-      "INSERT INTO {ducklake_alias}.meta.schema_version VALUES ({schema_version})"
+      "DROP VIEW IF EXISTS {ducklake_alias}.pub.{DBI::dbQuoteIdentifier(con, view)}"
     ))
   }
-  # Future schema migrations key off `current` here; there is only one
-  # version so far.
+  for (table in tables) {
+    DBI::dbExecute(con, glue::glue(
+      "DROP TABLE IF EXISTS {ducklake_alias}.pub.{DBI::dbQuoteIdentifier(con, table)}"
+    ))
+  }
+  create_tables(con, "pub", pub_tables)
+
+  # meta.pub_state goes with them. It lives in `meta` but it belongs to the
+  # publication layer -- it is a record of what was built, not archival data --
+  # so it is dropped and recreated rather than emptied: its own columns are as
+  # capable of drifting as pub's are, and every row in it described rows that
+  # no longer exist.
+  DBI::dbExecute(con, glue::glue("DROP TABLE IF EXISTS {ducklake_alias}.meta.pub_state"))
+  DBI::dbExecute(con, glue::glue(
+    "CREATE TABLE {ducklake_alias}.meta.pub_state ({meta_tables$pub_state})"
+  ))
   invisible(TRUE)
 }
 

@@ -79,6 +79,148 @@ slugify <- function(x, max_len = 40) {
   ifelse(nzchar(x), x, "x")
 }
 
+# --- Deciding what actually needs rebuilding (ADR-017) ----------------------
+#
+# A survey's watermark is the change signals of the four `raw` tables
+# pub_layer() reads, concatenated. It is compared against the one recorded when
+# the survey was last built; equal means nothing it is built from has moved,
+# so the rebuild is skipped.
+#
+# Three signals per table, because there are three ways a row can change and no
+# single column catches all of them:
+#
+#   max(ingested_at)         inserts and edits. ingest() merges rather than
+#                            replaces (ADR-013), so this advances only for rows
+#                            that actually changed -- the property asserted by
+#                            "re-refreshing unchanged data rewrites nothing" in
+#                            test-ingest.R. Without that merge behaviour this
+#                            column would advance every run and the watermark
+#                            would never match.
+#   max(deleted_detected_at) a row flagged deleted. Flagging sets only
+#                            is_deleted/deleted_detected_at and leaves
+#                            ingested_at untouched, so max(ingested_at) alone
+#                            would miss a deletion entirely -- the one case
+#                            that would silently serve stale data.
+#   count(*)                 a row removed outright, which is what
+#                            on_vanished = "delete" does to question and option
+#                            rows, and what expunge() does to responses.
+#
+# survey_questions/survey_question_options carry no deleted_detected_at column;
+# their vanished rows are deleted rather than flagged, which count(*) catches.
+#
+# raw.surveys additionally contributes its columns *by value* (`v`), not just
+# its bookkeeping. It is one row per survey, so reading the actual title,
+# status, type, modified_on, and is_deleted costs nothing measurable, and it
+# removes this table's dependence on ingested_at being stamped correctly --
+# which matters because the survey title is what the wide view is *named*
+# after, so a missed retitle leaves a view under a name that no longer exists
+# in pub.surveys. Doing the same for the other three tables would mean reading
+# every response and answer to decide whether to read every response and
+# answer, which is the work this whole mechanism exists to avoid.
+#
+# Every component is COALESCEd to '' rather than left NULL, because concat_ws()
+# *skips* NULL arguments: a NULL would shift every later component one place
+# left, letting two genuinely different watermarks collide.
+pub_source_watermarks <- function(con) {
+  DBI::dbGetQuery(con, glue::glue("
+    WITH s AS (
+      SELECT survey_id,
+             COALESCE(max(ingested_at)::VARCHAR, '') AS m,
+             COALESCE(max(deleted_detected_at)::VARCHAR, '') AS d,
+             count(*)::VARCHAR AS n,
+             concat_ws('~', COALESCE(max(title), ''), COALESCE(max(status), ''),
+                       COALESCE(max(type), ''), COALESCE(max(modified_on), ''),
+                       COALESCE(max(is_deleted)::VARCHAR, '')) AS v
+      FROM {ducklake_alias}.raw.surveys GROUP BY survey_id
+    ),
+    q AS (
+      SELECT survey_id, COALESCE(max(ingested_at)::VARCHAR, '') AS m, count(*)::VARCHAR AS n
+      FROM {ducklake_alias}.raw.survey_questions GROUP BY survey_id
+    ),
+    o AS (
+      SELECT survey_id, COALESCE(max(ingested_at)::VARCHAR, '') AS m, count(*)::VARCHAR AS n
+      FROM {ducklake_alias}.raw.survey_question_options GROUP BY survey_id
+    ),
+    r AS (
+      SELECT survey_id,
+             COALESCE(max(ingested_at)::VARCHAR, '') AS m,
+             COALESCE(max(deleted_detected_at)::VARCHAR, '') AS d,
+             count(*)::VARCHAR AS n
+      FROM {ducklake_alias}.raw.responses GROUP BY survey_id
+    )
+    SELECT s.survey_id,
+           concat_ws('|',
+             s.m, s.d, s.n, s.v,
+             COALESCE(q.m, ''), COALESCE(q.n, '0'),
+             COALESCE(o.m, ''), COALESCE(o.n, '0'),
+             COALESCE(r.m, ''), COALESCE(r.d, ''), COALESCE(r.n, '0')
+           ) AS source_watermark
+    FROM s
+      LEFT JOIN q USING (survey_id)
+      LEFT JOIN o USING (survey_id)
+      LEFT JOIN r USING (survey_id)"))
+}
+
+pub_build_state <- function(con) {
+  DBI::dbGetQuery(con, glue::glue("SELECT * FROM {ducklake_alias}.meta.pub_state"))
+}
+
+# NA-safe "these differ". NA on either side counts as a difference: an unknown
+# value can never be evidence that a rebuild is unnecessary, so it falls to the
+# safe side (a redundant rebuild) rather than the unsafe one (a skipped change).
+differs <- function(x, y) is.na(x) | is.na(y) | x != y
+
+# Pure decision function, easy to unit test without a database -- deliberately
+# the same shape as decide_refresh() (ingest.R), and with the same fail-safe
+# direction: getting an answer wrong here must cost a redundant rebuild, never
+# a stale `pub` row. `pub` is rebuildable from `raw` alone (ADR-008), so a
+# redundant rebuild is only ever wasted time.
+#
+# `build` describes how this run would build a survey. It is compared as well
+# as the watermark because identical input still produces different output
+# under a different setting: `language` and `tz` change the values written, and
+# `wide_views` changes whether the view exists at all. A change to the pub SQL
+# itself is handled a level up, by the schema minor version (ADR-018).
+decide_rebuild <- function(survey_ids, watermarks, prior, build) {
+  current <- watermarks$source_watermark[match(survey_ids, watermarks$survey_id)]
+  i <- match(survey_ids, prior$survey_id)
+  reason <- rep(NA_character_, length(survey_ids))
+
+  unset <- function() is.na(reason)
+  reason[unset() & is.na(i)] <- "never built"
+  # A survey_id with no watermark row is one that isn't in raw.surveys at all
+  # (pub_layer(surveys = ) accepts any id the caller passes). There is nothing
+  # to compare, so it can never be proven unchanged.
+  reason[unset() & is.na(current)] <- "no rows in raw for this survey"
+  reason[unset() & differs(prior$source_watermark[i], current)] <- "raw data changed"
+  reason[unset() & differs(prior$language[i], build$language)] <- "language changed"
+  reason[unset() & differs(prior$tz[i], build$tz)] <- "tz changed"
+  reason[unset() & differs(prior$wide_views[i], build$wide_views)] <- "wide_views changed"
+
+  tibble::tibble(
+    survey_id = survey_ids,
+    rebuild = !is.na(reason),
+    reason = ifelse(is.na(reason), "unchanged", reason)
+  )
+}
+
+# What this run was built from and with, committed alongside the rows it
+# describes (see rebuild_survey_atomically()).
+record_pub_state <- function(con, survey_id, watermark, build, now) {
+  DBI::dbExecute(con, glue::glue(
+    "DELETE FROM {ducklake_alias}.meta.pub_state
+     WHERE survey_id = {DBI::dbQuoteString(con, survey_id)}"
+  ))
+  write_rows_generic(con, "meta.pub_state", tibble::tibble(
+    survey_id = survey_id,
+    source_watermark = as.character(watermark),
+    language = build$language,
+    tz = build$tz,
+    wide_views = build$wide_views,
+    built_at = now
+  ))
+}
+
 rebuild_pub_surveys <- function(con, survey_ids, tz) {
   ids <- id_list_sql(con, survey_ids)
   DBI::dbExecute(con, glue::glue(
@@ -170,6 +312,41 @@ rebuild_pub_survey <- function(con, survey_id, language, tz) {
   ))
 }
 
+# One survey's rebuild, its wide view, and the record of the build, in a single
+# transaction. Two reasons, in that order of importance:
+#
+# - The meta.pub_state row must commit with the rows it describes. Written in a
+#   separate transaction, a failure between the two would leave a survey marked
+#   as built from data that had just been rolled back, and every later run would
+#   then skip it: stale forever, and silently. This is the one ordering in the
+#   incremental path that can actually corrupt the result.
+# - It is also much faster. Every statement outside a transaction is its own
+#   DuckLake snapshot, and a snapshot costs a catalog write regardless of how
+#   many rows it carries -- which is why rebuilding a survey's 20 question rows
+#   cost about as much as its 10,000 answer rows. *Measured* on a 50-survey,
+#   27k-response archive, grouping each survey's statements into one
+#   transaction took a full rebuild from 778 snapshots and 43s to 128 and 25s.
+#
+# ROLLBACK runs from on.exit() rather than a tryCatch(), so an error still
+# propagates out of pub_layer() exactly as it did before -- this changes what a
+# failure leaves behind, not whether it is reported.
+rebuild_survey_atomically <- function(con, survey_id, title, language, tz, wide_views,
+                                      watermark, build, now = Sys.time()) {
+  committed <- FALSE
+  DBI::dbExecute(con, "BEGIN")
+  on.exit(if (!committed) try(DBI::dbExecute(con, "ROLLBACK"), silent = TRUE), add = TRUE)
+
+  rebuild_pub_survey(con, survey_id, language, tz)
+  if (wide_views) {
+    rebuild_wide_view(con, survey_id, title)
+  }
+  record_pub_state(con, survey_id, watermark, build, now)
+
+  DBI::dbExecute(con, "COMMIT")
+  committed <- TRUE
+  invisible(NULL)
+}
+
 # Column aliases for the wide pivot: shortname where present and unique,
 # "q<id>" otherwise, deduplicated by suffixing the question_id (the
 # duplicate-shortname collision rule ADR-008 requires be documented).
@@ -247,6 +424,18 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #' need archival-grade fidelity, so this is where judgement calls (typing,
 #' language selection, reporting-value joins) belong instead of in `ingest()`.
 #'
+#' A survey is rebuilt only when something it is built from or with has
+#' changed (ADR-017): the `raw` rows themselves, or the `language`, `tz`, or
+#' `wide_views` setting, or the version of alchemeR doing the building. A run
+#' where nothing changed upstream does no per-survey work at all, which is what
+#' makes this cheap enough to call on every pipeline tick. Each survey that is
+#' rebuilt is rebuilt whole, in one transaction, exactly as before -- there is
+#' no partial or row-level update of `pub`.
+#'
+#' `meta.pub_state` records what each survey was last built from. Deleting a
+#' row from it, or passing `force = TRUE`, forces that survey to be rebuilt on
+#' the next run.
+#'
 #' Every timestamp in `pub` (`pub.surveys.created_on`/`modified_on`,
 #' `pub.responses.date_submitted`/`date_started`/`date_updated`) is presented
 #' as wall-clock time in `tz`. `date_submitted`/`date_started` carry an
@@ -257,34 +446,53 @@ rebuild_wide_view <- function(con, survey_id, title) {
 #' See `vignette("data-model")`.
 #'
 #' @param db Application database directory. Defaults to [alchemer_db_path()].
-#' @param surveys If supplied, only these survey ids are rebuilt. Otherwise
-#'   every survey in `raw.surveys` is rebuilt.
-#' @param language Which title language to resolve multilingual fields to.
-#'   Letters, digits, spaces, and `-`/`_` only (Alchemer language names are
-#'   always simple words, e.g. `"English"`) -- title_sql() interpolates this
-#'   directly into a generated SQL/JSONPath expression with no further
-#'   escaping, so it is validated up front rather than quoted in context.
+#' @param surveys If supplied, only these survey ids are considered, and each
+#'   is rebuilt whether or not it has changed. Otherwise every survey in
+#'   `raw.surveys` is considered and the changed ones are rebuilt.
 #' @param wide_views Whether to (re)generate the per-survey wide views.
-#' @param tz Timezone for every `pub` timestamp. Defaults to `ALCHEMER_TZ`,
-#'   then the machine's own timezone (see [alchemer_tz()]). Set `ALCHEMER_TZ`
-#'   explicitly for scheduled runs so the values written don't depend on
-#'   which machine ran them.
-#' @return Invisibly, the character vector of survey ids rebuilt.
+#' @param force Rebuild every survey considered, skipping change detection.
+#'   For rebuilding after something outside this function has touched `pub`.
+#' @section Configuration:
+#' The timezone and the title language come from the environment and cannot be
+#' passed here (ADR-019): `ALCHEMER_TZ` and `ALCHEMER_LANGUAGE`. Changing
+#' either makes the next run rebuild every survey, since both change the values
+#' written from identical input. Set `ALCHEMER_TZ` explicitly for a scheduled
+#' run — unset, it falls back to the machine's own timezone, so a laptop and a
+#' UTC server would write different values into one database.
+#' @return Invisibly, the character vector of survey ids actually rebuilt --
+#'   which on an unchanged database is legitimately empty.
+#' @seealso [ingest()], which fills the `raw` layer this is built from.
 #' @export
-pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "English",
-                      wide_views = TRUE, tz = NULL) {
-  # Routed through alchemer_tz() even when supplied directly, so an explicit
-  # argument is validated against the IANA database exactly like the
-  # environment variable is -- `tz` reaches SQL as a bare literal.
-  tz <- alchemer_tz(tz)
-  if (!grepl("^[A-Za-z0-9 _-]+$", language)) {
-    cli::cli_abort(
-      "`language` must contain only letters, digits, spaces, '-', or '_'; got {.val {language}}.",
-      class = "alchemeR_config_error"
-    )
-  }
+pub_layer <- function(db = alchemer_db_path(), surveys = NULL,
+                      wide_views = TRUE, force = FALSE) {
+  # Both validated by their config readers before reaching SQL, where each
+  # arrives as a bare literal: an IANA name for the timezone, and a strict
+  # character allowlist for the language (title_sql() interpolates it into a
+  # generated SQL/JSONPath expression with no further escaping).
+  tz <- alchemer_tz()
+  language <- alchemer_language()
   con <- alchemer_db(db)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+  assert_schema_compatible(con, db)
+
+  # A publication-layer schema change -- a bump of the schema *minor* version
+  # (ADR-018) -- means `pub`'s tables, or the SQL that fills them, are not the
+  # ones the stored rows were built with. Everything in `pub` is dropped,
+  # recreated from the current DDL, and rebuilt below from `raw`, which is what
+  # keeps `pub` from drifting: CREATE TABLE IF NOT EXISTS would otherwise leave
+  # a table created by an older version with its old columns forever.
+  #
+  # The new version is stamped in the same transaction as the reset, and before
+  # any survey is rebuilt, so this is resumable: if the rebuild that follows is
+  # interrupted, the next run doesn't reset again -- it finds an empty
+  # meta.pub_state and simply builds the surveys that didn't get done.
+  stamped <- db_schema_version(con)
+  if (!is.null(stamped) && !identical(stamped$minor, schema_minor)) {
+    DBI::dbExecute(con, "BEGIN")
+    reset_pub_schema(con)
+    stamp_schema_version(con, schema_major, schema_minor)
+    DBI::dbExecute(con, "COMMIT")
+  }
 
   survey_ids <- if (!is.null(surveys)) {
     as.character(surveys)
@@ -295,25 +503,62 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL, language = "Engli
     return(invisible(character(0)))
   }
 
-  rebuild_pub_surveys(con, survey_ids, tz)
-  titles <- DBI::dbGetQuery(con, glue::glue(
-    "SELECT survey_id, title FROM {ducklake_alias}.pub.surveys
-     WHERE survey_id IN ({id_list_sql(con, survey_ids)})"
-  ))
+  build <- list(language = language, tz = tz, wide_views = isTRUE(wide_views))
 
-  for (survey_id in survey_ids) {
-    rebuild_pub_survey(con, survey_id, language, tz)
-    if (wide_views) {
-      # or_default(), not %||%: a survey with no title, or an id that isn't
-      # in raw.surveys at all, gives NA here rather than NULL, which %||%
-      # does not catch -- and slugify(NA) yields the placeholder "x", so the
-      # view came out named `wide_x_<id>` instead of falling back to the id.
-      title <- or_default(titles$title[titles$survey_id == survey_id][1], survey_id)
-      rebuild_wide_view(con, survey_id, title)
-    }
+  # Read once, before any rebuild transaction opens, and recorded verbatim for
+  # every survey built in this run. Reading it *first* -- rather than after
+  # each rebuild -- is what makes a concurrent ingest() safe: a rebuild's own
+  # transaction can only ever see a snapshot at or newer than this one, so the
+  # worst case is recording a watermark slightly older than the data actually
+  # built from, which costs one redundant rebuild on the next run. The reverse,
+  # recording a watermark newer than the data built and so skipping a real
+  # change forever, cannot happen in this order.
+  watermarks <- pub_source_watermarks(con)
+  decisions <- if (isTRUE(force)) {
+    tibble::tibble(survey_id = survey_ids, rebuild = TRUE, reason = "force = TRUE")
+  } else if (!is.null(surveys)) {
+    # An explicit surveys= is a request to rebuild those surveys, exactly as
+    # ingest(surveys = ) is a request to refresh them: the caller has said what
+    # they want and change detection does not get to overrule it.
+    tibble::tibble(survey_id = survey_ids, rebuild = TRUE, reason = "explicit surveys= argument")
+  } else {
+    decide_rebuild(survey_ids, watermarks, pub_build_state(con), build)
+  }
+  to_rebuild <- decisions$survey_id[decisions$rebuild]
+
+  # pub.surveys is rebuilt unconditionally, for every survey considered rather
+  # than only the changed ones. It is one statement over one small row per
+  # survey (*measured*: 0.17s for 50 surveys, against 25s+ for their per-survey
+  # rebuilds), and keeping it outside the incremental path means survey-level
+  # facts -- a retitling, a status change, an is_deleted flag -- can never be
+  # the thing that goes stale while the expensive tables are skipped.
+  DBI::dbExecute(con, "BEGIN")
+  rebuild_pub_surveys(con, survey_ids, tz)
+  DBI::dbExecute(con, "COMMIT")
+
+  if (length(to_rebuild) == 0) {
+    return(invisible(character(0)))
   }
 
-  invisible(survey_ids)
+  titles <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT survey_id, title FROM {ducklake_alias}.pub.surveys
+     WHERE survey_id IN ({id_list_sql(con, to_rebuild)})"
+  ))
+  now <- Sys.time()
+
+  for (survey_id in to_rebuild) {
+    # or_default(), not %||%: a survey with no title, or an id that isn't
+    # in raw.surveys at all, gives NA here rather than NULL, which %||%
+    # does not catch -- and slugify(NA) yields the placeholder "x", so the
+    # view came out named `wide_x_<id>` instead of falling back to the id.
+    title <- or_default(titles$title[titles$survey_id == survey_id][1], survey_id)
+    watermark <- watermarks$source_watermark[match(survey_id, watermarks$survey_id)]
+    rebuild_survey_atomically(
+      con, survey_id, title, language, tz, wide_views, watermark, build, now
+    )
+  }
+
+  invisible(to_rebuild)
 }
 
 #' Pivot one survey's answers to one row per respondent, on demand

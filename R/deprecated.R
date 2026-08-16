@@ -3,6 +3,24 @@
 # once per session (lifecycle::deprecate_warn()). They will be removed in
 # 2.0.0 (NEWS.md).
 
+# These are the only functions in the package that still accept credentials as
+# arguments. That is deliberate and does not reopen ADR-019: a deprecated
+# function's entire job is to let calls written against the old API keep
+# working, and the old API took a token and a secret_key. Everything current
+# reads the environment and nothing else. Unsupplied, these fall back to the
+# environment too, with the same error as every other entry point.
+deprecated_client <- function(token, secret_key) {
+  token <- token %||% env_or("ALCHEMER_API_TOKEN", "")
+  secret <- secret_key %||% env_or("ALCHEMER_API_SECRET", "")
+  if (!nzchar(token)) {
+    abort_unset("ALCHEMER_API_TOKEN", "Alchemer API token")
+  }
+  if (!nzchar(secret)) {
+    abort_unset("ALCHEMER_API_SECRET", "Alchemer API secret")
+  }
+  new_alchemer_client(token, secret)
+}
+
 #' Retrieve all surveys in Alchemer
 #'
 #' @description
@@ -22,7 +40,7 @@
 #' @export
 all_surveys <- function(token = NULL, secret_key = NULL) {
   lifecycle::deprecate_warn("1.0.0", "all_surveys()", "alchemer_surveys()")
-  alchemer_surveys(alchemer_client(token = token, secret = secret_key))
+  alchemer_surveys(deprecated_client(token, secret_key))
 }
 
 #' Fetch Alchemer survey response data
@@ -47,7 +65,7 @@ all_surveys <- function(token = NULL, secret_key = NULL) {
 fetch_survey <- function(survey_id, token = NULL, secret_key = NULL,
                          survey_name = "survey_data", file = NULL) {
   lifecycle::deprecate_warn("1.0.0", "fetch_survey()", "alchemer_responses()")
-  df <- alchemer_responses(survey_id, alchemer_client(token = token, secret = secret_key))
+  df <- alchemer_responses(survey_id, deprecated_client(token, secret_key))
   if (!is.null(file)) {
     # alchemer_responses() keeps nested fields (survey_data, url_variables,
     # data_quality) as list-columns (ADR-003 applies to raw fidelity
@@ -83,5 +101,5 @@ fetch_survey <- function(survey_id, token = NULL, secret_key = NULL,
 #' @export
 fetch_data_dictionary <- function(survey_id, token = NULL, secret_key = NULL) {
   lifecycle::deprecate_warn("1.0.0", "fetch_data_dictionary()", "alchemer_questions()")
-  alchemer_questions(survey_id, alchemer_client(token = token, secret = secret_key))
+  alchemer_questions(survey_id, deprecated_client(token, secret_key))
 }

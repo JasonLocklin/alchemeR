@@ -128,4 +128,5 @@ alchemer_responses("8611799")
 
 `vignette("getting-started")` to set up · `vignette("data-model")` for the
 schema, history, and what is deliberately not stored · `vignette("scheduling")`
-for running it unattended.
+for running it unattended · `vignette("troubleshooting")` for when a survey
+fails to refresh.

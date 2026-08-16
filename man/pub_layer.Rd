@@ -7,32 +7,25 @@
 pub_layer(
   db = alchemer_db_path(),
   surveys = NULL,
-  language = "English",
   wide_views = TRUE,
-  tz = NULL
+  force = FALSE
 )
 }
 \arguments{
 \item{db}{Application database directory. Defaults to \code{\link[=alchemer_db_path]{alchemer_db_path()}}.}
 
-\item{surveys}{If supplied, only these survey ids are rebuilt. Otherwise
-every survey in \code{raw.surveys} is rebuilt.}
-
-\item{language}{Which title language to resolve multilingual fields to.
-Letters, digits, spaces, and \code{-}/\verb{_} only (Alchemer language names are
-always simple words, e.g. \code{"English"}) -- title_sql() interpolates this
-directly into a generated SQL/JSONPath expression with no further
-escaping, so it is validated up front rather than quoted in context.}
+\item{surveys}{If supplied, only these survey ids are considered, and each
+is rebuilt whether or not it has changed. Otherwise every survey in
+\code{raw.surveys} is considered and the changed ones are rebuilt.}
 
 \item{wide_views}{Whether to (re)generate the per-survey wide views.}
 
-\item{tz}{Timezone for every \code{pub} timestamp. Defaults to \code{ALCHEMER_TZ},
-then the machine's own timezone (see \code{\link[=alchemer_tz]{alchemer_tz()}}). Set \code{ALCHEMER_TZ}
-explicitly for scheduled runs so the values written don't depend on
-which machine ran them.}
+\item{force}{Rebuild every survey considered, skipping change detection.
+For rebuilding after something outside this function has touched \code{pub}.}
 }
 \value{
-Invisibly, the character vector of survey ids rebuilt.
+Invisibly, the character vector of survey ids actually rebuilt --
+which on an unchanged database is legitimately empty.
 }
 \description{
 Typed, English-resolved (or \code{language}-resolved) tables for ordinary
@@ -42,6 +35,18 @@ need archival-grade fidelity, so this is where judgement calls (typing,
 language selection, reporting-value joins) belong instead of in \code{ingest()}.
 }
 \details{
+A survey is rebuilt only when something it is built from or with has
+changed (ADR-017): the \code{raw} rows themselves, or the \code{language}, \code{tz}, or
+\code{wide_views} setting, or the version of alchemeR doing the building. A run
+where nothing changed upstream does no per-survey work at all, which is what
+makes this cheap enough to call on every pipeline tick. Each survey that is
+rebuilt is rebuilt whole, in one transaction, exactly as before -- there is
+no partial or row-level update of \code{pub}.
+
+\code{meta.pub_state} records what each survey was last built from. Deleting a
+row from it, or passing \code{force = TRUE}, forces that survey to be rebuilt on
+the next run.
+
 Every timestamp in \code{pub} (\code{pub.surveys.created_on}/\code{modified_on},
 \code{pub.responses.date_submitted}/\code{date_started}/\code{date_updated}) is presented
 as wall-clock time in \code{tz}. \code{date_submitted}/\code{date_started} carry an
@@ -50,4 +55,17 @@ exact instant and rendered in \code{tz}; \code{date_updated} and the two
 survey-level fields carry no suffix and are already in the account's own
 local time, so they are cast unchanged. \code{raw} is never converted at all.
 See \code{vignette("data-model")}.
+}
+\section{Configuration}{
+
+The timezone and the title language come from the environment and cannot be
+passed here (ADR-019): \code{ALCHEMER_TZ} and \code{ALCHEMER_LANGUAGE}. Changing
+either makes the next run rebuild every survey, since both change the values
+written from identical input. Set \code{ALCHEMER_TZ} explicitly for a scheduled
+run — unset, it falls back to the machine's own timezone, so a laptop and a
+UTC server would write different values into one database.
+}
+
+\seealso{
+\code{\link[=ingest]{ingest()}}, which fills the \code{raw} layer this is built from.
 }

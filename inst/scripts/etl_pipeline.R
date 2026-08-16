@@ -26,10 +26,19 @@ cli::cli_inform(paste0(
   "ingest(): {sum(result$status == 'ok')} refreshed, ",
   "{sum(result$status == 'skipped')} skipped, {sum(result$status == 'error')} failed."
 ))
+if (any(result$status == "error")) {
+  # The reason, not just the count. A failed survey keeps whatever was last
+  # archived for it and retries next run, so this is a signal to investigate
+  # (see vignette("troubleshooting")), not a reason to stop the pipeline.
+  print(result[result$status == "error", c("survey_id", "http_status", "message")])
+}
 
 # --- Transform -------------------------------------------------------------
+# Only surveys whose `raw` rows actually moved are rebuilt, so this is cheap on
+# a tick where little or nothing changed upstream.
 
-pub_layer()
+rebuilt <- pub_layer()
+cli::cli_inform("pub_layer(): {length(rebuilt)} survey(s) rebuilt, the rest unchanged.")
 
 checks <- db_check()
 if (!all(checks$passed)) {

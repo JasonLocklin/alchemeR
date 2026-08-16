@@ -1,7 +1,12 @@
-# Copy to .Renviron (project) or ~/.Renviron (user) and fill in. alchemeR reads
-# all of these from the environment, so no credential ever has to be written
-# into project source. The API secret and the analytics database password can
-# come from keyring instead -- see vignette("scheduling").
+# Copy to .Renviron (project) or ~/.Renviron (user) and fill in. This file is
+# the *only* place alchemeR takes configuration from: no function accepts a
+# credential, a domain, a timezone, or a tuning value as an argument.
+#
+# Nothing here has to be written down. Any of these can be set from a vault at
+# the top of a script instead, which is how the secret and the analytics
+# database password are best handled -- see vignette("scheduling"):
+#
+#   Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))
 
 # --- Required --------------------------------------------------------------
 
@@ -39,6 +44,11 @@ ALCHEMER_RPM=100
 # regardless of change detection. A correctness backstop, not a freshness
 # setting -- lower it for accounts with edit-heavy closed surveys.
 ALCHEMER_FULL_SWEEP_DAYS=90
+
+# Which language multilingual question and option titles are resolved to in
+# pub. Only relevant for multilingual surveys. Changing it makes the next
+# pub_layer() rebuild every survey, since it changes the values written.
+ALCHEMER_LANGUAGE=English
 
 # --- Analytics database (only for the Load stage) --------------------------
 # Matches the odbc + SQL Server example in inst/scripts/etl_pipeline.R;

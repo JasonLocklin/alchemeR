@@ -12,6 +12,29 @@ that keeps it — and optionally your analytics database — current.
   and `vignette("getting-started")`.
 * The database can be read while the pipeline writes to it, so an analyst's
   session never blocks a scheduled run and is never blocked by one.
+* All configuration comes from `ALCHEMER_*` environment variables and nowhere
+  else. `alchemer_client()` now takes no arguments; `ingest()` no longer takes
+  `full_sweep_days` or `rpm`; `pub_layer()` no longer takes `tz` or `language`;
+  `expunge()` no longer takes `tz`. The new `ALCHEMER_LANGUAGE` replaces
+  `pub_layer(language = )`. To keep a secret out of project source, set the
+  variable from a vault in your script —
+  `Sys.setenv(ALCHEMER_API_SECRET = keyring::key_get("alchemer", "api_secret"))`.
+  The deprecated `all_surveys()`, `fetch_survey()`, and `fetch_data_dictionary()`
+  keep their `token`/`secret_key` arguments, so existing calls to them still
+  work unchanged.
+* The application database carries a `major.minor` schema version. A minor bump
+  (a change to `pub` or the SQL that builds it) makes `pub_layer()` drop and
+  rebuild the whole `pub` schema automatically, so it can't drift. A major bump
+  (a change to the archival `raw` layer) makes `ingest()` and `pub_layer()`
+  stop and tell you to archive and rebuild the directory, or migrate it by
+  hand — there is no automatic migration of an archive. `db_status()` and
+  `db_check()` keep working either way.
+* `pub_layer()` rebuilds a survey only when the `raw` rows it is built from have
+  changed, or when the `language`/`tz`/`wide_views` setting or the alchemeR
+  version has. A run where nothing changed upstream now does no per-survey work
+  at all; each survey that is rebuilt is rebuilt whole, in one transaction.
+  `pub_layer(force = TRUE)` rebuilds regardless, and `meta.pub_state` records
+  what each survey was last built from. See `vignette("data-model")`.
 * `pub_layer()` builds tidy, typed, language-resolved tables from `raw`.
   `survey_wide()` computes the one-row-per-respondent shape on demand for any
   survey. For everything else, query the database directly over a plain
@@ -28,6 +51,12 @@ that keeps it — and optionally your analytics database — current.
   `vignette("scheduling")`.
 * Maintenance: `db_status()`, `db_check()`, `compact()`, `expire_history()`, and
   `expunge()` (which removes data *and* its history, for retention obligations).
+* `ingest_failures()` names the surveys currently failing to refresh and why —
+  message, status code, and any failed integrity assertion. `ingest()` warns
+  when a run has failures rather than reporting them only in an invisible
+  return value, and that return value now carries each failure's `message` and
+  `http_status` alongside its `status`. `vignette("troubleshooting")` covers
+  reading them, and the causes that recur.
 
 ## Configuration
 
@@ -66,6 +95,39 @@ All settings come from the environment; see
 
   Code relying on any of those exact shapes needs updating at the point of use,
   not just silencing the warning.
+
+## Bug fixes
+
+* **A failed survey refresh is retried on the next run.** A failure used to
+  record the change-detection values it had just failed to archive, so the next
+  run compared them against themselves, decided "no change detected", and
+  skipped the survey — silently, for up to `ALCHEMER_FULL_SWEEP_DAYS` (90 by
+  default) or until the survey changed again upstream. A survey could therefore
+  sit un-refreshed with responses waiting, showing `consecutive_failures` frozen
+  at 1. Change detection now stays pointed at the last *successful* state, so a
+  failed survey is retried until it succeeds.
+
+  If you are upgrading with surveys already parked this way, refresh them once
+  explicitly — `ingest(surveys = c("123", "456"))` always refreshes, regardless
+  of change detection — or run `ingest(force = TRUE)` once.
+* **A field that arrives as an array no longer fails the survey.** Alchemer
+  varies the arity of fields it documents as scalars — `team` is one id on most
+  surveys and an array on a survey shared across teams, and it is not the only
+  one. Such a value reached `purrr::map_chr()` as a length-2 vector and aborted
+  that survey's whole refresh with `Result must be length 1, not 2`, on every
+  run, for as long as the survey stayed that way. It now lands in `raw` as JSON
+  (`["10","11"]`), which `raw` is for. The same fix closes a silent one: a
+  length-1 *object* in a scalar column did not error — it was `as.character()`d
+  into an R deparse and archived as `list(id = "1", name = "Research")`.
+  Re-ingest any affected survey to replace those values.
+* Failure messages are stored and displayed as a single line. An rlang/cli error
+  is a multi-line, glyph-bulleted block, which arrived garbled in a tibble cell
+  or a log file — with the actual sentence lost behind the decoration. The
+  wording is unchanged, only the layout.
+* `alchemer_responses()` and the other direct-API functions honour a
+  `resultsperpage` passed through `...`. It was documented but silently reset
+  to 500, which made a smaller page size impossible to ask for — the one knob
+  that can get a very wide survey under Alchemer's 30-second response timeout.
 
 ## Other changes
 
