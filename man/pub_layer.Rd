@@ -20,8 +20,9 @@ is rebuilt whether or not it has changed. Otherwise every survey in
 
 \item{wide_views}{Whether to (re)generate the per-survey wide views.}
 
-\item{force}{Rebuild every survey considered, skipping change detection.
-For rebuilding after something outside this function has touched \code{pub}.}
+\item{force}{Rebuild every survey wholesale, ignoring what changed since
+the last run. The escape hatch for a \code{pub} that has drifted -- a normal
+run never needs it.}
 }
 \value{
 Invisibly, the character vector of survey ids actually rebuilt --

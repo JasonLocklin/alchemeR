@@ -79,145 +79,19 @@ slugify <- function(x, max_len = 40) {
   ifelse(nzchar(x), x, "x")
 }
 
-# --- Deciding what actually needs rebuilding (ADR-017) ----------------------
-#
-# A survey's watermark is the change signals of the four `raw` tables
-# pub_layer() reads, concatenated. It is compared against the one recorded when
-# the survey was last built; equal means nothing it is built from has moved,
-# so the rebuild is skipped.
-#
-# Three signals per table, because there are three ways a row can change and no
-# single column catches all of them:
-#
-#   max(ingested_at)         inserts and edits. ingest() merges rather than
-#                            replaces (ADR-013), so this advances only for rows
-#                            that actually changed -- the property asserted by
-#                            "re-refreshing unchanged data rewrites nothing" in
-#                            test-ingest.R. Without that merge behaviour this
-#                            column would advance every run and the watermark
-#                            would never match.
-#   max(deleted_detected_at) a row flagged deleted. Flagging sets only
-#                            is_deleted/deleted_detected_at and leaves
-#                            ingested_at untouched, so max(ingested_at) alone
-#                            would miss a deletion entirely -- the one case
-#                            that would silently serve stale data.
-#   count(*)                 a row removed outright, which is what
-#                            on_vanished = "delete" does to question and option
-#                            rows, and what expunge() does to responses.
-#
-# survey_questions/survey_question_options carry no deleted_detected_at column;
-# their vanished rows are deleted rather than flagged, which count(*) catches.
-#
-# raw.surveys additionally contributes its columns *by value* (`v`), not just
-# its bookkeeping. It is one row per survey, so reading the actual title,
-# status, type, modified_on, and is_deleted costs nothing measurable, and it
-# removes this table's dependence on ingested_at being stamped correctly --
-# which matters because the survey title is what the wide view is *named*
-# after, so a missed retitle leaves a view under a name that no longer exists
-# in pub.surveys. Doing the same for the other three tables would mean reading
-# every response and answer to decide whether to read every response and
-# answer, which is the work this whole mechanism exists to avoid.
-#
-# Every component is COALESCEd to '' rather than left NULL, because concat_ws()
-# *skips* NULL arguments: a NULL would shift every later component one place
-# left, letting two genuinely different watermarks collide.
-pub_source_watermarks <- function(con) {
-  DBI::dbGetQuery(con, glue::glue("
-    WITH s AS (
-      SELECT survey_id,
-             COALESCE(max(ingested_at)::VARCHAR, '') AS m,
-             COALESCE(max(deleted_detected_at)::VARCHAR, '') AS d,
-             count(*)::VARCHAR AS n,
-             concat_ws('~', COALESCE(max(title), ''), COALESCE(max(status), ''),
-                       COALESCE(max(type), ''), COALESCE(max(modified_on), ''),
-                       COALESCE(max(is_deleted)::VARCHAR, '')) AS v
-      FROM {ducklake_alias}.raw.surveys GROUP BY survey_id
-    ),
-    q AS (
-      SELECT survey_id, COALESCE(max(ingested_at)::VARCHAR, '') AS m, count(*)::VARCHAR AS n
-      FROM {ducklake_alias}.raw.survey_questions GROUP BY survey_id
-    ),
-    o AS (
-      SELECT survey_id, COALESCE(max(ingested_at)::VARCHAR, '') AS m, count(*)::VARCHAR AS n
-      FROM {ducklake_alias}.raw.survey_question_options GROUP BY survey_id
-    ),
-    r AS (
-      SELECT survey_id,
-             COALESCE(max(ingested_at)::VARCHAR, '') AS m,
-             COALESCE(max(deleted_detected_at)::VARCHAR, '') AS d,
-             count(*)::VARCHAR AS n
-      FROM {ducklake_alias}.raw.responses GROUP BY survey_id
-    )
-    SELECT s.survey_id,
-           concat_ws('|',
-             s.m, s.d, s.n, s.v,
-             COALESCE(q.m, ''), COALESCE(q.n, '0'),
-             COALESCE(o.m, ''), COALESCE(o.n, '0'),
-             COALESCE(r.m, ''), COALESCE(r.d, ''), COALESCE(r.n, '0')
-           ) AS source_watermark
-    FROM s
-      LEFT JOIN q USING (survey_id)
-      LEFT JOIN o USING (survey_id)
-      LEFT JOIN r USING (survey_id)"))
-}
-
-pub_build_state <- function(con) {
-  DBI::dbGetQuery(con, glue::glue("SELECT * FROM {ducklake_alias}.meta.pub_state"))
-}
-
-# NA-safe "these differ". NA on either side counts as a difference: an unknown
-# value can never be evidence that a rebuild is unnecessary, so it falls to the
-# safe side (a redundant rebuild) rather than the unsafe one (a skipped change).
-differs <- function(x, y) is.na(x) | is.na(y) | x != y
-
-# Pure decision function, easy to unit test without a database -- deliberately
-# the same shape as decide_refresh() (ingest.R), and with the same fail-safe
-# direction: getting an answer wrong here must cost a redundant rebuild, never
-# a stale `pub` row. `pub` is rebuildable from `raw` alone (ADR-008), so a
-# redundant rebuild is only ever wasted time.
-#
-# `build` describes how this run would build a survey. It is compared as well
-# as the watermark because identical input still produces different output
-# under a different setting: `language` and `tz` change the values written, and
-# `wide_views` changes whether the view exists at all. A change to the pub SQL
-# itself is handled a level up, by the schema minor version (ADR-018).
-decide_rebuild <- function(survey_ids, watermarks, prior, build) {
-  current <- watermarks$source_watermark[match(survey_ids, watermarks$survey_id)]
-  i <- match(survey_ids, prior$survey_id)
-  reason <- rep(NA_character_, length(survey_ids))
-
-  unset <- function() is.na(reason)
-  reason[unset() & is.na(i)] <- "never built"
-  # A survey_id with no watermark row is one that isn't in raw.surveys at all
-  # (pub_layer(surveys = ) accepts any id the caller passes). There is nothing
-  # to compare, so it can never be proven unchanged.
-  reason[unset() & is.na(current)] <- "no rows in raw for this survey"
-  reason[unset() & differs(prior$source_watermark[i], current)] <- "raw data changed"
-  reason[unset() & differs(prior$language[i], build$language)] <- "language changed"
-  reason[unset() & differs(prior$tz[i], build$tz)] <- "tz changed"
-  reason[unset() & differs(prior$wide_views[i], build$wide_views)] <- "wide_views changed"
-
-  tibble::tibble(
-    survey_id = survey_ids,
-    rebuild = !is.na(reason),
-    reason = ifelse(is.na(reason), "unchanged", reason)
-  )
-}
-
 # What this run was built from and with, committed alongside the rows it
 # describes (see rebuild_survey_atomically()).
-record_pub_state <- function(con, survey_id, watermark, build, now) {
+record_pub_state <- function(con, survey_id, plan_row, language, tz, wide_views, now) {
   DBI::dbExecute(con, glue::glue(
     "DELETE FROM {ducklake_alias}.meta.pub_state
      WHERE survey_id = {DBI::dbQuoteString(con, survey_id)}"
   ))
   write_rows_generic(con, "meta.pub_state", tibble::tibble(
-    survey_id = survey_id,
-    source_watermark = as.character(watermark),
-    language = build$language,
-    tz = build$tz,
-    wide_views = build$wide_views,
-    built_at = now
+    survey_id = survey_id, built_at = now,
+    responses_watermark = plan_row$responses_watermark,
+    definition_watermark = plan_row$definition_watermark,
+    n_responses = plan_row$n_responses, n_definition = plan_row$n_definition,
+    language = language, tz = tz, wide_views = isTRUE(wide_views)
   ))
 }
 
@@ -244,8 +118,20 @@ rebuild_pub_surveys <- function(con, survey_ids, tz) {
   ))
 }
 
-rebuild_pub_survey <- function(con, survey_id, language, tz) {
+# Rebuild one survey's `pub` rows.
+#
+# `since` is the watermark from the last successful build of this survey, or
+# NULL to rebuild the survey wholesale. When it is supplied, only the responses
+# whose raw row has been written or flagged since then are touched -- which is
+# what makes a run that finds five new responses in one survey write five rows
+# rather than the survey's entire answer set. See pub_watermarks() for why the
+# question/option tables force a full rebuild instead.
+rebuild_pub_survey <- function(con, survey_id, language, tz, since = NULL) {
   qs <- DBI::dbQuoteString(con, survey_id)
+
+  if (!is.null(since)) {
+    return(rebuild_pub_survey_rows(con, survey_id, language, tz, since))
+  }
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.questions WHERE survey_id = {qs}"))
   DBI::dbExecute(con, glue::glue(
@@ -266,7 +152,17 @@ rebuild_pub_survey <- function(con, survey_id, language, tz) {
   ))
 
   DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.responses WHERE survey_id = {qs}"))
-  DBI::dbExecute(con, glue::glue(
+  DBI::dbExecute(con, pub_responses_insert_sql(con, tz, glue::glue("survey_id = {qs}")))
+
+  DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.answers WHERE survey_id = {qs}"))
+  DBI::dbExecute(con, pub_answers_insert_sql(con, language, glue::glue("r.survey_id = {qs}")))
+}
+
+# The two response-scoped INSERTs, factored out so the wholesale rebuild above
+# and the incremental one below issue exactly the same SQL with a different
+# `where` -- there is no second copy of the typing rules to drift.
+pub_responses_insert_sql <- function(con, tz, where) {
+  glue::glue(
     "INSERT INTO {ducklake_alias}.pub.responses BY NAME
      SELECT survey_id, response_id, status,
             (is_test_data = '1') AS is_test_data,
@@ -276,16 +172,17 @@ rebuild_pub_survey <- function(con, survey_id, language, tz) {
             session_id, language, link_id, contact_id,
             TRY_CAST(response_time AS INTEGER) AS response_time,
             is_deleted
-     FROM {ducklake_alias}.raw.responses WHERE survey_id = {qs}"
-  ))
+     FROM {ducklake_alias}.raw.responses WHERE {where}"
+  )
+}
 
-  # Reporting value / option_id are recovered on a best-effort basis by
-  # matching the verbatim answer text against an option's resolved title --
-  # Alchemer's per-question-type answer shape varies too much (ADR-003) to
-  # do better universally. Analysts needing more can always fall back to
-  # raw.responses.survey_data, which is untouched by this join.
-  DBI::dbExecute(con, glue::glue("DELETE FROM {ducklake_alias}.pub.answers WHERE survey_id = {qs}"))
-  DBI::dbExecute(con, glue::glue(
+# Reporting value / option_id are recovered on a best-effort basis by
+# matching the verbatim answer text against an option's resolved title --
+# Alchemer's per-question-type answer shape varies too much (ADR-003) to
+# do better universally. Analysts needing more can always fall back to
+# raw.responses.survey_data, which is untouched by this join.
+pub_answers_insert_sql <- function(con, language, where) {
+  glue::glue(
     "INSERT INTO {ducklake_alias}.pub.answers BY NAME
      SELECT
        r.survey_id, r.response_id, je.key AS question_id,
@@ -308,8 +205,70 @@ rebuild_pub_survey <- function(con, survey_id, language, tz) {
        TRY_CAST(json_extract_string(je.value, '$.shown') AS BOOLEAN) AS shown,
        r.is_deleted
      FROM {ducklake_alias}.raw.responses r, json_each(r.survey_data) je
-     WHERE r.survey_id = {qs}"
+     WHERE {where}"
+  )
+}
+
+# The incremental half of rebuild_pub_survey(): only the responses whose raw
+# row was written or flagged after `since`.
+#
+# `ingested_at` is the right signal and the merge in db_schema.R is what makes
+# it one: a row that Alchemer returned unchanged is not rewritten, so it keeps
+# the `ingested_at` of the run that last actually changed it, while every new
+# or edited row carries the current run's. A response that vanished upstream is
+# not rewritten either -- it is flagged in place -- so `deleted_detected_at`
+# has to be checked alongside it, or a deletion would never reach `pub`.
+#
+# The comparison is strictly `>`. The stored watermark is the maximum
+# `ingested_at` the last build *saw*, so every row at exactly that timestamp
+# was already built; `>=` would rewrite the whole of the previous run's batch
+# on every run, which for a survey taking 15,000 responses a day is 15,000
+# rows of pointless churn. Nothing is lost at the boundary because a refresh
+# is atomic per survey (refresh_survey() wraps one survey in one transaction):
+# either its rows were visible when the watermark was taken -- in which case
+# they are in the watermark and were built -- or they were not, in which case
+# the watermark predates them and this clause catches them next run.
+rebuild_pub_survey_rows <- function(con, survey_id, language, tz, since) {
+  qs <- DBI::dbQuoteString(con, survey_id)
+  # Read the watermark from meta.pub_state rather than formatting `since` (a
+  # POSIXct) as a literal. POSIXct is a double (seconds since epoch); at
+  # 2026-era timestamps the precision is ~0.4 µs, so format("%OS6") can
+  # produce a literal 1 µs earlier than the stored int64 value -- making rows
+  # that exactly equal the watermark satisfy ">", and rebuilding more than
+  # changed. The subquery keeps the comparison in DuckDB's own int64 type.
+  since_in_db <- glue::glue(
+    "(SELECT responses_watermark FROM {ducklake_alias}.meta.pub_state WHERE survey_id = {qs})"
+  )
+  changed <- glue::glue(
+    "(ingested_at > {since_in_db} OR deleted_detected_at > {since_in_db})"
+  )
+  changed_ids <- glue::glue(
+    "SELECT response_id FROM {ducklake_alias}.raw.responses
+     WHERE survey_id = {qs} AND {changed}"
+  )
+
+  DBI::dbExecute(con, glue::glue(
+    "DELETE FROM {ducklake_alias}.pub.responses
+     WHERE survey_id = {qs} AND response_id IN ({changed_ids})"
   ))
+  DBI::dbExecute(con, pub_responses_insert_sql(
+    con, tz, glue::glue("survey_id = {qs} AND {changed}")
+  ))
+
+  DBI::dbExecute(con, glue::glue(
+    "DELETE FROM {ducklake_alias}.pub.answers
+     WHERE survey_id = {qs} AND response_id IN ({changed_ids})"
+  ))
+  DBI::dbExecute(con, pub_answers_insert_sql(
+    con, language,
+    glue::glue("r.survey_id = {qs} AND {changed}")
+  ))
+
+  # A response removed from `raw` outright -- which only expunge() does, and
+  # which it already cleans up in `pub` itself -- leaves nothing behind to
+  # match on, so it is not handled here. Upstream deletions are flagged, not
+  # removed (ADR-005), and are caught by the deleted_detected_at clause above.
+  invisible(NULL)
 }
 
 # One survey's rebuild, its wide view, and the record of the build, in a single
@@ -331,16 +290,19 @@ rebuild_pub_survey <- function(con, survey_id, language, tz) {
 # propagates out of pub_layer() exactly as it did before -- this changes what a
 # failure leaves behind, not whether it is reported.
 rebuild_survey_atomically <- function(con, survey_id, title, language, tz, wide_views,
-                                      watermark, build, now = Sys.time()) {
+                                      plan_row, now = Sys.time()) {
   committed <- FALSE
   DBI::dbExecute(con, "BEGIN")
   on.exit(if (!committed) try(DBI::dbExecute(con, "ROLLBACK"), silent = TRUE), add = TRUE)
 
-  rebuild_pub_survey(con, survey_id, language, tz)
-  if (wide_views) {
-    rebuild_wide_view(con, survey_id, title)
+  if (identical(plan_row$action, "full")) {
+    rebuild_pub_survey(con, survey_id, language, tz)
+    if (wide_views) rebuild_wide_view(con, survey_id, title)
+  } else {
+    rebuild_pub_survey(con, survey_id, language, tz,
+                       since = plan_row$responses_watermark_prior)
   }
-  record_pub_state(con, survey_id, watermark, build, now)
+  record_pub_state(con, survey_id, plan_row, language, tz, wide_views, now)
 
   DBI::dbExecute(con, "COMMIT")
   committed <- TRUE
@@ -503,28 +465,12 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL,
     return(invisible(character(0)))
   }
 
-  build <- list(language = language, tz = tz, wide_views = isTRUE(wide_views))
-
-  # Read once, before any rebuild transaction opens, and recorded verbatim for
-  # every survey built in this run. Reading it *first* -- rather than after
-  # each rebuild -- is what makes a concurrent ingest() safe: a rebuild's own
-  # transaction can only ever see a snapshot at or newer than this one, so the
-  # worst case is recording a watermark slightly older than the data actually
-  # built from, which costs one redundant rebuild on the next run. The reverse,
-  # recording a watermark newer than the data built and so skipping a real
-  # change forever, cannot happen in this order.
-  watermarks <- pub_source_watermarks(con)
-  decisions <- if (isTRUE(force)) {
-    tibble::tibble(survey_id = survey_ids, rebuild = TRUE, reason = "force = TRUE")
-  } else if (!is.null(surveys)) {
-    # An explicit surveys= is a request to rebuild those surveys, exactly as
-    # ingest(surveys = ) is a request to refresh them: the caller has said what
-    # they want and change detection does not get to overrule it.
-    tibble::tibble(survey_id = survey_ids, rebuild = TRUE, reason = "explicit surveys= argument")
-  } else {
-    decide_rebuild(survey_ids, watermarks, pub_build_state(con), build)
-  }
-  to_rebuild <- decisions$survey_id[decisions$rebuild]
+  # An explicit `surveys =` is a request to rebuild those surveys, so it
+  # implies force for them -- the caller has named them for a reason, and
+  # silently skipping one because nothing changed would be surprising.
+  plan <- pub_plan(con, survey_ids, language, tz, wide_views = isTRUE(wide_views),
+                   force = isTRUE(force) || !is.null(surveys))
+  to_rebuild <- plan[plan$action != "skip", , drop = FALSE]
 
   # pub.surveys is rebuilt unconditionally, for every survey considered rather
   # than only the changed ones. It is one statement over one small row per
@@ -536,29 +482,137 @@ pub_layer <- function(db = alchemer_db_path(), surveys = NULL,
   rebuild_pub_surveys(con, survey_ids, tz)
   DBI::dbExecute(con, "COMMIT")
 
-  if (length(to_rebuild) == 0) {
+  if (nrow(to_rebuild) == 0) {
     return(invisible(character(0)))
   }
 
   titles <- DBI::dbGetQuery(con, glue::glue(
     "SELECT survey_id, title FROM {ducklake_alias}.pub.surveys
-     WHERE survey_id IN ({id_list_sql(con, to_rebuild)})"
+     WHERE survey_id IN ({id_list_sql(con, to_rebuild$survey_id)})"
   ))
   now <- Sys.time()
 
-  for (survey_id in to_rebuild) {
+  for (i in seq_len(nrow(to_rebuild))) {
+    survey_id <- to_rebuild$survey_id[i]
     # or_default(), not %||%: a survey with no title, or an id that isn't
     # in raw.surveys at all, gives NA here rather than NULL, which %||%
     # does not catch -- and slugify(NA) yields the placeholder "x", so the
     # view came out named `wide_x_<id>` instead of falling back to the id.
     title <- or_default(titles$title[titles$survey_id == survey_id][1], survey_id)
-    watermark <- watermarks$source_watermark[match(survey_id, watermarks$survey_id)]
     rebuild_survey_atomically(
-      con, survey_id, title, language, tz, wide_views, watermark, build, now
+      con, survey_id, title, language, tz, wide_views,
+      to_rebuild[i, , drop = FALSE], now
     )
   }
 
-  invisible(to_rebuild)
+  invisible(to_rebuild$survey_id)
+}
+
+# What each survey needs this run, from the watermarks stored by the last one.
+#
+#   "skip"  nothing in `raw` has changed for it since the last build
+#   "rows"  only responses changed: rebuild those responses' pub rows
+#   "full"  the survey's questions, options or own record changed, or it has
+#           never been built, or `language`/`tz`/`wide_views` differ from
+#           the build stored
+#
+# The split matters because question titles and option values are joined into
+# *every* answer row, so a definition change invalidates the whole survey while
+# a batch of new responses invalidates only itself.
+pub_plan <- function(con, survey_ids, language, tz, wide_views = TRUE, force = FALSE) {
+  wm <- pub_watermarks(con)
+  prior <- if (table_exists(con, "meta", "pub_state")) {
+    DBI::dbGetQuery(con, glue::glue("SELECT * FROM {ducklake_alias}.meta.pub_state"))
+  } else {
+    data.frame()
+  }
+
+  out <- data.frame(survey_id = as.character(survey_ids), stringsAsFactors = FALSE)
+  match_wm <- match(out$survey_id, wm$survey_id)
+  out$responses_watermark <- wm$responses_wm[match_wm]
+  out$definition_watermark <- wm$definition_wm[match_wm]
+  out$n_responses <- as.integer(wm$responses_n[match_wm])
+  out$n_definition <- as.integer(wm$definition_n[match_wm])
+
+  has_prior <- nrow(prior) > 0
+  match_prior <- if (has_prior) match(out$survey_id, prior$survey_id) else rep(NA_integer_, nrow(out))
+  out$responses_watermark_prior <- if (has_prior) prior$responses_watermark[match_prior] else as.POSIXct(NA)
+  definition_prior <- if (has_prior) prior$definition_watermark[match_prior] else as.POSIXct(NA)
+  n_responses_prior <- if (has_prior) as.integer(prior$n_responses[match_prior]) else NA_integer_
+  n_definition_prior <- if (has_prior) as.integer(prior$n_definition[match_prior]) else NA_integer_
+  language_prior <- if (has_prior) prior$language[match_prior] else NA_character_
+  tz_prior <- if (has_prior) prior$tz[match_prior] else NA_character_
+  wide_views_prior <- if (has_prior && "wide_views" %in% names(prior)) {
+    as.logical(prior$wide_views[match_prior])
+  } else {
+    NA
+  }
+
+  # newer(a, b): "a is strictly after b, or there is a watermark now where
+  # there was none before". A survey with no watermark at all -- no rows, or
+  # rows hand-inserted without `ingested_at`, which ingest() never does --
+  # reads as unchanged, and is covered by never_built on its first build.
+  newer <- function(now, before) !is.na(now) & (is.na(before) | now > before)
+
+  never_built <- is.na(match_prior)
+  settings_changed <- !never_built &
+    (is.na(language_prior) | language_prior != language |
+     is.na(tz_prior) | tz_prior != tz |
+     is.na(wide_views_prior) | wide_views_prior != isTRUE(wide_views))
+  # A row *count* that moved without its watermark moving means rows were
+  # removed, which no incremental path can repair -- so it forces a full
+  # rebuild rather than a row-level one. An unknown count on either side is
+  # read as "no evidence of a removal", the same way an unknown watermark is.
+  differ <- function(now, before) !is.na(now) & !is.na(before) & now != before
+  fewer <- function(now, before) !is.na(now) & !is.na(before) & now < before
+
+  definition_changed <- newer(out$definition_watermark, definition_prior) |
+    differ(out$n_definition, n_definition_prior)
+  responses_removed <- fewer(out$n_responses, n_responses_prior)
+  responses_changed <- newer(out$responses_watermark, out$responses_watermark_prior)
+
+  out$action <- ifelse(
+    force | never_built | settings_changed | definition_changed | responses_removed |
+      (responses_changed & is.na(out$responses_watermark_prior)), "full",
+    ifelse(responses_changed, "rows", "skip")
+  )
+  out
+}
+
+# The state of `raw` per survey, as the two halves the plan reacts to
+# differently, each as a (high-water mark, row count) pair.
+#
+# `deleted_detected_at` is checked alongside `ingested_at` because flagging a
+# vanished row is an UPDATE that does not restamp `ingested_at` -- see
+# rebuild_pub_survey_rows().
+#
+# The counts are not redundant with the watermarks: a *removed* row moves no
+# watermark at all. Questions and options that vanish upstream are deleted
+# outright rather than flagged (merge_survey_rows()'s `on_vanished = "delete"`),
+# so without the count a deleted question would sit in `pub.questions` forever.
+pub_watermarks <- function(con) {
+  DBI::dbGetQuery(con, glue::glue(
+    "WITH r AS (
+       SELECT survey_id,
+              MAX(GREATEST(ingested_at, COALESCE(deleted_detected_at, ingested_at))) AS wm,
+              COUNT(*) AS n
+       FROM {ducklake_alias}.raw.responses GROUP BY survey_id
+     ), d AS (
+       SELECT survey_id, MAX(wm) AS wm, COUNT(*) AS n FROM (
+         SELECT survey_id,
+                GREATEST(ingested_at, COALESCE(deleted_detected_at, ingested_at)) AS wm
+           FROM {ducklake_alias}.raw.surveys
+         UNION ALL SELECT survey_id, ingested_at FROM {ducklake_alias}.raw.survey_questions
+         UNION ALL SELECT survey_id, ingested_at FROM {ducklake_alias}.raw.survey_question_options
+       ) GROUP BY survey_id
+     )
+     SELECT s.survey_id,
+            r.wm AS responses_wm, COALESCE(r.n, 0) AS responses_n,
+            d.wm AS definition_wm, COALESCE(d.n, 0) AS definition_n
+     FROM {ducklake_alias}.raw.surveys s
+     LEFT JOIN r ON r.survey_id = s.survey_id
+     LEFT JOIN d ON d.survey_id = s.survey_id"
+  ))
 }
 
 #' Pivot one survey's answers to one row per respondent, on demand

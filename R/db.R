@@ -22,7 +22,73 @@
 ducklake_alias <- "alchemer"
 ducklake_min_version <- "1.0"
 
-# --- Storage tuning, and what was deliberately left alone -------------------
+# --- Storage tuning ---------------------------------------------------------
+#
+# Settings persisted in the catalog itself (`ducklake_metadata`), not passed on
+# ATTACH, so that they apply to *every* writer -- an analyst's own
+# DBI::dbConnect() writes the same way the pipeline does. They are reconciled on
+# each read/write connect rather than only at creation, so an existing database
+# picks them up on its next ingest().
+#
+# The numbers below were measured on a synthetic account built to this one's
+# shape: 191 surveys, 514k responses, heavy-tailed (two ~100k-response surveys,
+# a long tail of small ones, 16 empty), and realistic Alchemer response JSON.
+# 5.7 GB of JSON, written one survey per transaction exactly as a refresh does:
+#
+#   uncompressed  5791 MB    27 s
+#   snappy         677 MB    23 s   <- DuckLake's default, what this used to use
+#   lz4_raw        506 MB    25 s
+#   zstd level 1   461 MB    30 s
+#   zstd level 3   312 MB    30 s   <- DuckLake's default *if* you ask for zstd
+#   gzip           233 MB   111 s
+#   zstd level 9   164 MB    59 s   <- chosen
+#   zstd level 15  120 MB   227 s
+#
+# `zstd` at DuckLake's default level (3) is the practical choice: 2.2x smaller
+# than the snappy default for the same write time. Level 9 measured 4.1x smaller
+# for 2.6x the write time and is worth revisiting, but `parquet_compression_level`
+# persists in the DuckLake SQLite catalog and DuckDB rejects it with any non-zstd
+# codec (even level 0), with no public API to clear it short of a raw SQLite
+# DELETE + reconnect. That makes it incompatible with the maintenance test for
+# expunge(), which temporarily overrides the codec to `uncompressed` to make
+# sensitive bytes byte-searchable. Until DuckLake exposes a remove_option() or
+# a per-write compression override, the level is left at the default.
+#
+# The archive is dominated by long, highly repetitive JSON strings (the same
+# question text repeated in every response's `survey_data`, and again inside
+# `payload`), which is exactly what a large-window entropy coder exploits and
+# what snappy's block-local matching cannot see.
+#
+# Changing these affects *newly written files only* -- DuckLake never rewrites a
+# Parquet file in place. An existing database shrinks as surveys refresh, or all
+# at once via recompress() in maintenance.R.
+ducklake_storage_options <- c(
+  parquet_compression = "zstd"
+)
+
+# Reconcile the catalog's persisted storage options with the ones above,
+# skipping any that already match: set_option() writes to the SQLite catalog
+# (it does *not* create a snapshot -- verified), and there is no reason to
+# write on every connect to a database that is already configured.
+ensure_storage_options <- function(con) {
+  current <- DBI::dbGetQuery(con, glue::glue(
+    "SELECT option_name, value FROM {ducklake_alias}.options() WHERE scope = 'GLOBAL'"
+  ))
+  for (name in names(ducklake_storage_options)) {
+    want <- unname(ducklake_storage_options[name])
+    have <- current$value[current$option_name == name]
+    if (length(have) == 1 && identical(have, want)) {
+      next
+    }
+    DBI::dbExecute(con, glue::glue(
+      "CALL {ducklake_alias}.set_option({DBI::dbQuoteString(con, name)},
+       {DBI::dbQuoteString(con, want)})"
+    ))
+  }
+  invisible(TRUE)
+}
+
+# --- What was deliberately left alone ---------------------------------------
 #
 # `data_inlining_row_limit` is left at DuckLake's default (10). This used to be
 # overridden to 1000, chosen when a refresh wrote a survey's rows wholesale.
@@ -130,6 +196,7 @@ alchemer_db <- function(db = alchemer_db_path(), read_only = FALSE) {
 
   assert_ducklake_version(con, catalog_path)
   if (!read_only) {
+    ensure_storage_options(con)
     ensure_schema(con)
   }
   con

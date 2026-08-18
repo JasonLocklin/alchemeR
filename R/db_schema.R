@@ -101,16 +101,18 @@ meta_tables <- list(
   # One row per survey built into `pub`, recording what it was built *from* and
   # *with* (ADR-017). pub_layer() rebuilds a survey only when one of these no
   # longer matches, so a run where nothing changed upstream does no work.
-  # Every column is part of that comparison: `source_watermark` covers the raw
-  # rows, and `language`/`tz`/`wide_views` cover the build, since each of them
-  # produces different output from identical input.
+  # Every column is part of that comparison: the watermarks cover the raw rows,
+  # and `language`/`tz`/`wide_views` cover the build, since each produces
+  # different output from identical input.
   #
   # A change to the pub SQL itself is *not* tracked here. That is what the
   # schema minor version is for (ADR-018): it invalidates the whole layer at
   # once, table shapes included, which a per-survey column could never do.
   pub_state = "
-    survey_id VARCHAR, source_watermark VARCHAR, language VARCHAR, tz VARCHAR,
-    wide_views BOOLEAN, built_at TIMESTAMP",
+    survey_id VARCHAR, built_at TIMESTAMP,
+    responses_watermark TIMESTAMP, definition_watermark TIMESTAMP,
+    n_responses INTEGER, n_definition INTEGER,
+    language VARCHAR, tz VARCHAR, wide_views BOOLEAN",
   schema_version = "major INTEGER, minor INTEGER"
 )
 

@@ -293,8 +293,13 @@ test_that("pub_layer regenerates the wide view when a question is added", {
       (survey_id, question_id, base_type, type, title, shortname, question_order)
     VALUES ('1', '99', 'Question', 'TEXTBOX', '{\"English\":\"Last Name\"}', 'Last Name', 3)")
   new_answer <- jsonlite::toJSON(list(`99` = list(id = 99, answer = "Smith", shown = TRUE)), auto_unbox = TRUE)
+  # `ingested_at` is restamped exactly as a refresh would restamp it -- it is
+  # how pub_layer() knows this survey changed, so leaving it unset here would
+  # test a state ingest() cannot produce.
   DBI::dbExecute(con, glue::glue("
-    UPDATE alchemer.raw.responses SET survey_data = json_merge_patch(survey_data, {DBI::dbQuoteString(con, new_answer)})
+    UPDATE alchemer.raw.responses
+    SET survey_data = json_merge_patch(survey_data, {DBI::dbQuoteString(con, new_answer)}),
+        ingested_at = now()
     WHERE response_id = 'r1'"))
   DBI::dbDisconnect(con, shutdown = TRUE)
 
@@ -316,7 +321,8 @@ test_that("pub_layer drops a survey's stale wide view when its title changes", {
   pub_layer(dir)
 
   con <- alchemer_db(dir)
-  DBI::dbExecute(con, "UPDATE alchemer.raw.surveys SET title = 'Renamed Survey' WHERE survey_id = '1'")
+  DBI::dbExecute(con, "UPDATE alchemer.raw.surveys
+                       SET title = 'Renamed Survey', ingested_at = now() WHERE survey_id = '1'")
   DBI::dbDisconnect(con, shutdown = TRUE)
   pub_layer(dir)
 
@@ -379,121 +385,163 @@ test_that("pub_layer(surveys = ) rebuilds only the requested survey", {
 })
 
 # --- Incremental rebuilds (ADR-017) -----------------------------------------
+#
+# These assert against DuckLake's own change feed rather than against row
+# counts, because what the incremental path changes is *what gets written*,
+# not what the table ends up holding -- a wholesale rebuild and an incremental
+# one leave identical contents, and only the change feed tells them apart.
 
-# What ingest()'s merge does to a row it actually changed: stamps ingested_at.
-# The tests below edit `raw` directly, so they have to do it themselves.
+changes_since <- function(con, schema, table, snapshot) {
+  DBI::dbGetQuery(con, glue::glue(
+    "SELECT change_type, COUNT(*) AS n
+     FROM ducklake_table_changes('alchemer', '{schema}', '{table}',
+                                 {snapshot + 1}, {latest_snapshot(con)})
+     GROUP BY change_type"
+  ))
+}
+
+latest_snapshot <- function(con) {
+  DBI::dbGetQuery(con, "SELECT MAX(snapshot_id) AS m FROM ducklake_snapshots('alchemer')")$m
+}
+
+# seed_survey() writes rows with no `ingested_at`; a real refresh always stamps
+# one, and pub_layer()'s change detection reads it. This brings a seeded
+# database up to a state ingest() could actually have produced.
+stamp_ingested <- function(con) {
+  for (tbl in c("responses", "surveys", "survey_questions", "survey_question_options")) {
+    DBI::dbExecute(con, glue::glue("UPDATE alchemer.raw.{tbl} SET ingested_at = now()"))
+  }
+}
+
+# What ingest()'s merge does to a specific table: stamps ingested_at. Used by
+# tests that need precise control over which table's watermark advances.
 stamp_raw <- function(con, table, at = Sys.time()) {
   DBI::dbExecute(con, glue::glue(
     "UPDATE alchemer.raw.{table} SET ingested_at = {DBI::dbQuoteLiteral(con, at)}"
   ))
 }
 
-a_build <- function(...) {
-  modifyList(list(language = "English", tz = "America/Toronto", wide_views = TRUE), list(...))
+add_response <- function(con, survey_id, response_id, first_name) {
+  survey_data <- jsonlite::toJSON(list(
+    `2` = list(id = 2, answer = first_name, shown = TRUE),
+    `26` = list(id = 26, answer = "Satisfied", shown = TRUE)
+  ), auto_unbox = TRUE)
+  DBI::dbExecute(con, glue::glue(
+    "INSERT INTO alchemer.raw.responses
+       (survey_id, response_id, status, is_test_data, date_submitted, date_updated,
+        survey_data, is_deleted, ingested_at)
+     VALUES ({DBI::dbQuoteString(con, survey_id)}, {DBI::dbQuoteString(con, response_id)},
+             'Complete', '0', '2026-02-01 10:00:00 EST', '2026-02-01 10:00:05',
+             {DBI::dbQuoteString(con, as.character(survey_data))}, FALSE, now())"
+  ))
 }
-a_prior <- function(...) {
-  as.data.frame(modifyList(
-    list(survey_id = "1", source_watermark = "w", language = "English", tz = "America/Toronto",
-         wide_views = TRUE),
-    list(...)
-  ), stringsAsFactors = FALSE)
-}
-a_watermark <- function(w = "w") data.frame(survey_id = "1", source_watermark = w)
 
-test_that("decide_rebuild: a survey that has never been built is rebuilt", {
-  out <- decide_rebuild("1", a_watermark(), a_prior(survey_id = "other"), a_build())
-  expect_true(out$rebuild)
-  expect_match(out$reason, "never built")
-})
-
-test_that("decide_rebuild: an unchanged survey built the same way is skipped", {
-  out <- decide_rebuild("1", a_watermark(), a_prior(), a_build())
-  expect_false(out$rebuild)
-  expect_equal(out$reason, "unchanged")
-})
-
-test_that("decide_rebuild: a moved watermark rebuilds", {
-  out <- decide_rebuild("1", a_watermark("w2"), a_prior(), a_build())
-  expect_true(out$rebuild)
-  expect_match(out$reason, "raw data changed")
-})
-
-test_that("decide_rebuild: each build setting rebuilds when it changes", {
-  expect_match(
-    decide_rebuild("1", a_watermark(), a_prior(), a_build(language = "French"))$reason, "language"
-  )
-  expect_match(decide_rebuild("1", a_watermark(), a_prior(), a_build(tz = "UTC"))$reason, "tz")
-  expect_match(
-    decide_rebuild("1", a_watermark(), a_prior(), a_build(wide_views = FALSE))$reason, "wide_views"
-  )
-})
-
-test_that("decide_rebuild: an unknown watermark is never treated as unchanged", {
-  # A survey_id the caller passed that isn't in raw.surveys at all. There is
-  # nothing to compare it against, so it must fall to the rebuild side.
-  out <- decide_rebuild("1", a_watermark(NA_character_), a_prior(), a_build())
-  expect_true(out$rebuild)
-})
-
-test_that("pub_layer() rebuilds nothing on a second run with nothing changed", {
-  # The property the incremental build exists for: a closed survey with no new
-  # activity costs nothing on every subsequent pipeline tick.
-  dir <- withr::local_tempdir()
+seeded_db <- function(ids = "1") {
+  dir <- withr::local_tempdir(.local_envir = parent.frame())
   con <- alchemer_db(dir)
-  seed_survey(con)
+  for (id in ids) seed_survey(con, id, paste("Survey", id))
+  stamp_ingested(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+  dir
+}
+
+test_that("a second pub_layer() run with nothing changed rebuilds nothing", {
+  dir <- seeded_db(c("1", "2"))
+  expect_setequal(pub_layer(dir), c("1", "2"))
+  expect_equal(pub_layer(dir), character(0))
+})
+
+test_that("a new response rebuilds its own answers, not the whole survey", {
+  dir <- seeded_db(c("1", "2"))
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  add_response(con, "1", "r3", "Nia")
+  before <- latest_snapshot(con)
   DBI::dbDisconnect(con, shutdown = TRUE)
 
   expect_equal(pub_layer(dir), "1")
-  expect_equal(pub_layer(dir), character(0))
 
-  # ...and skipping did not cost the data: pub is still complete.
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  # Two answer rows written -- the new response's -- and nothing deleted.
+  # Survey 1's other four and survey 2's four are never touched.
+  changed <- changes_since(con2, "pub", "answers", before)
+  expect_equal(changed$n[changed$change_type == "insert"], 2)
+  expect_false("delete" %in% changed$change_type)
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n, 10)
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.responses")$n, 5)
+})
+
+test_that("an edited response replaces only its own answers", {
+  dir <- seeded_db("1")
+  pub_layer(dir)
+
+  con <- alchemer_db(dir)
+  DBI::dbExecute(con, "
+    UPDATE alchemer.raw.responses
+    SET survey_data = json_merge_patch(survey_data, '{\"26\":{\"answer\":\"Unsatisfied\"}}'),
+        ingested_at = now()
+    WHERE response_id = 'r1'")
+  before <- latest_snapshot(con)
+  DBI::dbDisconnect(con, shutdown = TRUE)
+
+  expect_equal(pub_layer(dir), "1")
+
+  con2 <- alchemer_db(dir, read_only = TRUE)
+  on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
+  changed <- changes_since(con2, "pub", "answers", before)
+  expect_equal(sum(changed$n[changed$change_type == "insert"]), 2)
+  expect_equal(
+    DBI::dbGetQuery(con2, "SELECT answer FROM alchemer.pub.answers
+                           WHERE response_id = 'r1' AND question_id = '26'")$answer,
+    "Unsatisfied"
+  )
   expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.answers")$n, 4)
 })
 
-test_that("pub_layer() rebuilds the changed survey and leaves its neighbour alone", {
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con, "1", "Survey One")
-  seed_survey(con, "2", "Survey Two")
-  DBI::dbDisconnect(con, shutdown = TRUE)
+test_that("a question removed upstream forces a full rebuild of that survey", {
+  # A vanished question is deleted from raw rather than flagged
+  # (merge_survey_rows()'s on_vanished = "delete"), so no watermark moves --
+  # only the row count does, which is why pub_plan() tracks both.
+  dir <- seeded_db("1")
   pub_layer(dir)
 
   con <- alchemer_db(dir)
-  DBI::dbExecute(con, "
-    INSERT INTO alchemer.raw.responses
-      (survey_id, response_id, status, is_test_data, date_submitted, date_updated,
-       survey_data, is_deleted, ingested_at)
-    VALUES ('2', 'r3', 'Complete', '0', '2026-02-01 10:00:00 EST', '2026-02-01 10:00:05',
-            '{\"2\": {\"answer\": \"Zoe\", \"shown\": true}}', FALSE, now())")
+  DBI::dbExecute(con, "DELETE FROM alchemer.raw.survey_questions WHERE question_id = '26'")
   DBI::dbDisconnect(con, shutdown = TRUE)
 
-  expect_equal(pub_layer(dir), "2")
+  expect_equal(pub_layer(dir), "1")
 
   con2 <- alchemer_db(dir, read_only = TRUE)
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
-  expect_equal(
-    DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.responses WHERE survey_id = '2'")$n, 3
-  )
+  expect_equal(DBI::dbGetQuery(con2, "SELECT COUNT(*) n FROM alchemer.pub.questions")$n, 1)
 })
 
-test_that("pub_layer() detects a deletion that never touches ingested_at", {
-  # The case max(ingested_at) alone cannot see: flagging a response deleted
-  # sets is_deleted/deleted_detected_at and leaves ingested_at where it was.
-  # Without deleted_detected_at in the watermark this survey would be skipped
-  # forever, and pub.responses would go on saying the response is live.
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con)
-  stamp_raw(con, "responses")
-  DBI::dbDisconnect(con, shutdown = TRUE)
+test_that("changing language, or forcing, rebuilds a survey that has not changed", {
+  dir <- seeded_db("1")
+  withr::local_envvar(ALCHEMER_LANGUAGE = "English")
   pub_layer(dir)
 
+  expect_equal(pub_layer(dir), character(0))
+  withr::local_envvar(ALCHEMER_LANGUAGE = "Spanish")
+  expect_equal(pub_layer(dir), "1")
+  expect_equal(pub_layer(dir), character(0))
+  withr::local_envvar(ALCHEMER_LANGUAGE = "English")
+  expect_equal(pub_layer(dir, force = TRUE), "1")
+})
+
+test_that("a response flagged deleted upstream reaches pub without a full rebuild", {
+  dir <- seeded_db("1")
+  pub_layer(dir)
+
+  # Exactly what flag_or_delete_vanished() writes: is_deleted and
+  # deleted_detected_at, with ingested_at left alone.
   con <- alchemer_db(dir)
   DBI::dbExecute(con, "
     UPDATE alchemer.raw.responses SET is_deleted = TRUE, deleted_detected_at = now()
-    WHERE survey_id = '1' AND response_id = 'r2'")
+    WHERE response_id = 'r2'")
+  before <- latest_snapshot(con)
   DBI::dbDisconnect(con, shutdown = TRUE)
 
   expect_equal(pub_layer(dir), "1")
@@ -502,16 +550,16 @@ test_that("pub_layer() detects a deletion that never touches ingested_at", {
   on.exit(DBI::dbDisconnect(con2, shutdown = TRUE))
   expect_true(DBI::dbGetQuery(con2, "
     SELECT is_deleted FROM alchemer.pub.responses WHERE response_id = 'r2'")$is_deleted)
+  expect_true(all(DBI::dbGetQuery(con2, "
+    SELECT is_deleted FROM alchemer.pub.answers WHERE response_id = 'r2'")$is_deleted))
+  changed <- changes_since(con2, "pub", "answers", before)
+  expect_equal(sum(changed$n[changed$change_type == "insert"]), 2)
 })
 
 test_that("pub_layer() detects a row removed outright", {
-  # The count(*) signal: question and option rows that vanish upstream are
-  # deleted rather than flagged, so neither timestamp moves.
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con)
-  stamp_raw(con, "survey_question_options")
-  DBI::dbDisconnect(con, shutdown = TRUE)
+  # The count(*) signal: option rows that vanish upstream are deleted rather
+  # than flagged, so neither timestamp moves -- only the count does.
+  dir <- seeded_db("1")
   pub_layer(dir)
 
   con <- alchemer_db(dir)
@@ -526,10 +574,7 @@ test_that("pub_layer() detects a row removed outright", {
 })
 
 test_that("pub_layer() rebuilds when tz changes, so pub can't hold two timezones at once", {
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con)
-  DBI::dbDisconnect(con, shutdown = TRUE)
+  dir <- seeded_db("1")
   withr::local_envvar(ALCHEMER_TZ = "America/Toronto")
   pub_layer(dir)
 
@@ -544,10 +589,7 @@ test_that("pub_layer() rebuilds when tz changes, so pub can't hold two timezones
 })
 
 test_that("pub_layer(force = TRUE) rebuilds a survey that has not changed", {
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con)
-  DBI::dbDisconnect(con, shutdown = TRUE)
+  dir <- seeded_db("1")
   pub_layer(dir)
 
   expect_equal(pub_layer(dir), character(0))
@@ -564,14 +606,19 @@ test_that("a rebuild that fails partway records no build state and leaves pub as
   # reaches SQL in the *third* of the survey's statements, so pub.questions and
   # pub.options have already been written when it fires. Both must go back.
   # (pub_layer() validates tz up front, which is why this calls the internal.)
-  dir <- withr::local_tempdir()
+  dir <- seeded_db("1")
   con <- alchemer_db(dir)
-  seed_survey(con)
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
 
-  build <- list(language = "English", tz = "Not/AZone", wide_views = TRUE)
+  plan_row <- data.frame(
+    action = "full",
+    responses_watermark = as.POSIXct(NA), definition_watermark = as.POSIXct(NA),
+    n_responses = NA_integer_, n_definition = NA_integer_,
+    responses_watermark_prior = as.POSIXct(NA),
+    stringsAsFactors = FALSE
+  )
   expect_error(
-    rebuild_survey_atomically(con, "1", "T", "English", "Not/AZone", TRUE, "w", build),
+    rebuild_survey_atomically(con, "1", "T", "English", "Not/AZone", TRUE, plan_row),
     "TimeZone"
   )
 
@@ -586,10 +633,7 @@ test_that("a schema minor bump rebuilds pub from scratch and clears the drift", 
   # its tables or the SQL that fills them is fixed by throwing the layer away
   # and rebuilding it -- including structure that CREATE TABLE IF NOT EXISTS
   # would otherwise leave in place forever.
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con)
-  DBI::dbDisconnect(con, shutdown = TRUE)
+  dir <- seeded_db("1")
   pub_layer(dir)
 
   con <- alchemer_db(dir)
@@ -615,9 +659,8 @@ test_that("a schema minor bump rebuilds pub from scratch and clears the drift", 
 })
 
 test_that("the run after a minor bump is incremental again", {
-  dir <- withr::local_tempdir()
+  dir <- seeded_db("1")
   con <- alchemer_db(dir)
-  seed_survey(con)
   stamp_schema_version(con, schema_major, schema_minor - 1L)
   DBI::dbDisconnect(con, shutdown = TRUE)
 
@@ -630,11 +673,7 @@ test_that("an unchanged run costs far fewer snapshots than a rebuild", {
   # its own DuckLake snapshot, and a snapshot costs a catalog write however few
   # rows it carries -- which is what pub_layer()'s runtime actually tracked. A
   # regression in either the skip or the per-survey transaction shows up here.
-  dir <- withr::local_tempdir()
-  con <- alchemer_db(dir)
-  seed_survey(con, "1", "Survey One")
-  seed_survey(con, "2", "Survey Two")
-  DBI::dbDisconnect(con, shutdown = TRUE)
+  dir <- seeded_db(c("1", "2"))
 
   snapshots <- function() {
     con <- alchemer_db(dir, read_only = TRUE)
