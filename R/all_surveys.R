@@ -1,34 +1,39 @@
 #' Retrieve all surveys in Alchemer
 #'
 #' @param token
-#' Alchemer API token (https://apihelp.alchemer.com/help/authentication)
+#' Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+#' Defaults to the environment variable `ALCHEMER_API_TOKEN`.
 #'
 #' @param secret_key
-#' Alchemer API secret key
+#' Alchemer API secret key. Defaults to the environment variable
+#' `ALCHEMER_API_SECRET`.
 #'
 #' @return
-#' Data frame with all Alchemer surveys
+#' Data frame with all Alchemer surveys (up to 500; an error is raised if the
+#' account has more).
 #' @export
 #'
 #' @examples
-#' # all_surveys("YOUR-ALCHEMER_TOKEN","YOUR-ALCHEMER_SECRET_KEY")
+#' \dontrun{
+#' all_surveys()
+#' }
+all_surveys <- function(
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
+) {
+  surveys <- api_get(
+    "survey",
+    list(resultsperpage = 500, page = 1),
+    token,
+    secret_key
+  )
 
-all_surveys <- function(token, secret_key){
-
-  survey_url <- glue::glue("https://api.alchemer-ca.com/v5/survey/")
-  survey_req <- httr2::request(survey_url)
-
-  surveys <- survey_req |>
-    httr2::req_url_query(
-      `api_token` = token,
-      `api_token_secret` = secret_key,
-      `resultsperpage` = 250,
-      page = 1
+  if (surveys$total_pages > 1) {
+    stop(
+      "The account has more than 500 surveys; all_surveys() reads one page.",
+      call. = FALSE
     )
+  }
 
-  temp_surveys <- jsonlite::fromJSON(surveys$url, flatten = TRUE)
-
-  temp_surveys$data
-
+  surveys$data
 }
-

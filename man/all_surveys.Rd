@@ -4,19 +4,27 @@
 \alias{all_surveys}
 \title{Retrieve all surveys in Alchemer}
 \usage{
-all_surveys(token, secret_key)
+all_surveys(
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
+)
 }
 \arguments{
-\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication)}
+\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key}
+\item{secret_key}{Alchemer API secret key. Defaults to the environment variable
+\code{ALCHEMER_API_SECRET}.}
 }
 \value{
-Data frame with all Alchemer surveys
+Data frame with all Alchemer surveys (up to 500; an error is raised if the
+account has more).
 }
 \description{
 Retrieve all surveys in Alchemer
 }
 \examples{
-# all_surveys("YOUR-ALCHEMER_TOKEN","YOUR-ALCHEMER_SECRET_KEY")
+\dontrun{
+all_surveys()
+}
 }

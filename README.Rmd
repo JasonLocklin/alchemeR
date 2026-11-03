@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 
 <!-- badges: start -->
 
-[![R-CMD-check](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/R-CMD-check.yaml)
+[![R](https://github.com/grousell/alchemeR/actions/workflows/r.yml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/r.yml)
 <!-- badges: end -->
 
 The goal of alchemeR is to provide tools to access Alchemer survey data from their API and pull into an R environment. More informtion on the Alchemer API and set up can be found here: <https://apihelp.alchemer.com/help>

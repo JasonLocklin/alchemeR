@@ -6,17 +6,19 @@
 \usage{
 fetch_survey(
   survey_id,
-  token = "token",
-  secret_key = "secret_key",
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
   survey_name = "survey_data"
 )
 }
 \arguments{
 \item{survey_id}{Alchemer survey number, retrieved from survey URL}
 
-\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication)}
+\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key}
+\item{secret_key}{Alchemer API secret key. Defaults to the environment variable
+\code{ALCHEMER_API_SECRET}.}
 
 \item{survey_name}{Name of survey}
 }
@@ -24,9 +26,12 @@ fetch_survey(
 Downloaded file of survey responses
 }
 \description{
-This function retrieves survey data from an Alchemer account and saves a .csv file in a project folder.
-Requires user to have set up an API with Alchemer, including a token and secret key
+This function retrieves survey data from an Alchemer account and saves a
+.csv file in a project folder. Requires user to have set up an API with
+Alchemer, including a token and secret key
 }
 \examples{
-# alchemer_survey("SURVEY_ID", <YOUR-ALCHEMER_TOKEN>, <YOUR-ALCHEMER_SECRET_KEY>, "SURVEY_NAME")
+\dontrun{
+fetch_survey("SURVEY_ID", survey_name = "SURVEY_NAME")
+}
 }

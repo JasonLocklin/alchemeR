@@ -1,16 +1,19 @@
 #' Fetch Alchemer Survey Data
 #'
-#' This function retrieves survey data from an Alchemer account and saves a .csv file in a project folder.
-#' Requires user to have set up an API with Alchemer, including a token and secret key
+#' This function retrieves survey data from an Alchemer account and saves a
+#' .csv file in a project folder. Requires user to have set up an API with
+#' Alchemer, including a token and secret key
 #'
 #' @param survey_id
 #' Alchemer survey number, retrieved from survey URL
 #'
 #' @param token
-#' Alchemer API token (https://apihelp.alchemer.com/help/authentication)
+#' Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+#' Defaults to the environment variable `ALCHEMER_API_TOKEN`.
 #'
 #' @param secret_key
-#' Alchemer API secret key
+#' Alchemer API secret key. Defaults to the environment variable
+#' `ALCHEMER_API_SECRET`.
 #'
 #' @param survey_name
 #' Name of survey
@@ -20,49 +23,47 @@
 #' @export
 #'
 #' @examples
-#' # alchemer_survey("SURVEY_ID", <YOUR-ALCHEMER_TOKEN>, <YOUR-ALCHEMER_SECRET_KEY>, "SURVEY_NAME")
+#' \dontrun{
+#' fetch_survey("SURVEY_ID", survey_name = "SURVEY_NAME")
+#' }
 
-fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key", survey_name = "survey_data"){
+fetch_survey <- function(
+  survey_id,
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
+  survey_name = "survey_data"
+) {
+  pages <- api_get_all(
+    glue::glue("survey/{survey_id}/surveyresponse"),
+    token = token,
+    secret_key = secret_key
+  )
 
-  survey_url <- glue::glue("https://api.alchemer-ca.com/v5/survey/{survey_id}/surveyresponse")
-  survey_req <- httr2::request(survey_url)
+  vars <- c("id", "status", "is_test_data", "date_submitted", "response_time")
 
-  vars <- c( "id", "status", "is_test_data", "date_submitted", "response_time")
-
-  for (i in c(1:300)) {
-
-    survey <- survey_req |>
-      httr2::req_url_query(
-        `api_token` = token,
-        `api_token_secret` = secret_key,
-        `resultsperpage` = 250,
-        page = i
-      )
-
-    temp_survey_df <- jsonlite::fromJSON(survey$url, flatten = TRUE)
-
-    is_sso <- any(stringr::str_detect (names(temp_survey_df$data), "ssoconfirmation"))
-
-    if (length(temp_survey_df$data) == 0) {
-      break
-    } else {
-      if(is_sso == TRUE){
-        temp_df <- temp_survey_df$data |>
-          dplyr::select(tidyr::all_of(vars),
-                        tidyr::starts_with("url_variable"),
-                        tidyr::ends_with("answer"))
-      } else{
-        temp_df <- temp_survey_df$data |>
-          dplyr::select(tidyr::all_of(vars), tidyr::ends_with("answer"))
+  # Nothing is written until every page has arrived and parsed.
+  new_df <- pages |>
+    lapply(\(page) {
+      data <- page$data
+      if (NROW(data) == 0) {
+        return(NULL)
       }
-    }
+      is_sso <- any(stringr::str_detect(names(data), "ssoconfirmation"))
+      if (is_sso) {
+        dplyr::select(
+          data,
+          tidyr::all_of(vars),
+          tidyr::starts_with("url_variable"),
+          tidyr::ends_with("answer")
+        )
+      } else {
+        dplyr::select(data, tidyr::all_of(vars), tidyr::ends_with("answer"))
+      }
+    }) |>
+    dplyr::bind_rows()
 
-    if(!exists("new_df")){
-      new_df <- temp_df
-    } else {
-      new_df <- new_df |>
-        dplyr::bind_rows(temp_df)
-    }
+  if (nrow(new_df) == 0) {
+    stop("Survey ", survey_id, " has no responses.", call. = FALSE)
   }
 
   names(new_df) <- stringr::str_replace_all(names(new_df), "survey_data.", "Q")
@@ -74,5 +75,3 @@ fetch_survey <- function(survey_id, token = "token", secret_key = "secret_key", 
     row.names = FALSE
   )
 }
-
-

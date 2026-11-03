@@ -4,14 +4,20 @@
 \alias{fetch_data_dictionary}
 \title{Fetch Alchemer Data Dictionary}
 \usage{
-fetch_data_dictionary(survey_id, token = "token", secret_key = "secret_key")
+fetch_data_dictionary(
+  survey_id,
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
+)
 }
 \arguments{
 \item{survey_id}{Alchemer survey number, retrieved from survey URL}
 
-\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication)}
+\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key}
+\item{secret_key}{Alchemer API secret key. Defaults to the environment variable
+\code{ALCHEMER_API_SECRET}.}
 }
 \value{
 A data frame of question numbers and question labels
@@ -20,8 +26,10 @@ A data frame of question numbers and question labels
 A function that retrieves a data dictionary from an Alchemer survey.
 Requires user to have set up an API with Alchemer, including
 a token and secret key. If custom reporting values are used in Alchemer, then
-the function will download the custome value.
+the function will download the custom value.
 }
 \examples{
-# fetch_data_dictionary("SURVEY_ID","YOUR-ALCHEMER_TOKEN","YOUR-ALCHEMER_SECRET_KEY")
+\dontrun{
+fetch_data_dictionary("SURVEY_ID")
+}
 }
