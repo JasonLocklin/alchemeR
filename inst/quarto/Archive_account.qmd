@@ -1,0 +1,75 @@
+---
+title: "Alchemer account archive"
+format:
+  html:
+    embed-resources: true
+params:
+  archive_dir: "alchemer_archive"
+  min_age: 600
+  refresh: "auto"
+---
+
+Keeps one `survey_<id>.rds` file per survey of the account in `archive_dir`,
+with test data included, and lists what happened. Only read-only requests are
+sent. Credentials: set `ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET`
+(for example from `keyring` in your `.Renviron` or at the top of this file).
+Copy this file with
+`file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".")`.
+
+```{r}
+#| label: archive
+library(alchemeR)
+dir <- params$archive_dir
+dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+
+surveys <- all_surveys()
+saveRDS(surveys, file.path(dir, "surveys.rds")) # the account list at run time
+
+one <- function(id) {
+  tryCatch(
+    {
+      rows <- nrow(fetch_survey(id, dir = dir, refresh = params$refresh,
+                                min_age = params$min_age, include_test = TRUE))
+      data.frame(id = id, rows = rows, error = NA_character_)
+    },
+    error = \(e) data.frame(id = id, rows = NA_integer_, error = conditionMessage(e))
+  )
+}
+result <- dplyr::bind_rows(lapply(surveys$id, one))
+
+files <- file.path(dir, paste0("survey_", result$id, ".rds"))
+overview <- dplyr::tibble(
+  id = result$id, title = surveys$title, status = surveys$status,
+  rows = result$rows, size_mb = round(file.size(files) / 1e6, 2),
+  file_updated = file.mtime(files), error = result$error
+)
+orphans <- setdiff(
+  sub("^survey_(\\d+)\\.rds$", "\\1", list.files(dir, "^survey_\\d+\\.rds$")),
+  as.character(surveys$id)
+)
+```
+
+## Failures
+
+```{r}
+#| echo: false
+failed <- overview[!is.na(overview$error), c("id", "title", "error")]
+if (nrow(failed) > 0) knitr::kable(failed) else cat("None.")
+```
+
+## All surveys
+
+```{r}
+#| echo: false
+knitr::kable(overview[order(overview$id), names(overview) != "error"])
+```
+
+`r nrow(overview)` surveys, `r format(sum(overview$rows, na.rm = TRUE), big.mark = ",")` responses,
+`r round(sum(overview$size_mb, na.rm = TRUE), 1)` MB.
+
+## Files for surveys no longer on the account
+
+```{r}
+#| echo: false
+if (length(orphans) > 0) cat(paste0("survey_", orphans, ".rds"), sep = "\n") else cat("None.")
+```
