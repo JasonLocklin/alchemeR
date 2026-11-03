@@ -1,6 +1,6 @@
 Package: alchemeR
 Title: Download 'Alchemer' Survey Data
-Version: 0.0.0.9000
+Version: 0.1.0
 Authors@R: 
     person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre"))
 Description: Provides functions to access Alchemer data directly into R using 
@@ -15,12 +15,11 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports: 
     dplyr,
-    glue,
+    lubridate,
     httr2,
     jsonlite,
-    stringr,
-    tidyr,
     utils
 Suggests: 
+    knitr,
     testthat (>= 3.0.0),
     withr

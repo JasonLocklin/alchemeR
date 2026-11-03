@@ -121,27 +121,12 @@ test_that("a timeout at 100 per page is an error", {
   )
 })
 
-test_that("every request is a GET without _method", {
-  calls <- mock_api(\(req) {
-    path <- httr2::url_parse(req$url)$path
-    if (grepl("surveyquestion|surveyresponse", path)) {
-      page_response(req, 2, \(i) list(id = i, title = list(English = "q")))
-    } else {
-      json(list(
-        result_ok = TRUE,
-        total_pages = 1,
-        total_count = 1,
-        data = list(list(id = 1))
-      ))
-    }
-  })
-  suppressWarnings(try(fetch_data_dictionary(1), silent = TRUE))
-  suppressWarnings(try(all_surveys(), silent = TRUE))
-  withr::with_dir(
-    withr::local_tempdir(),
-    suppressWarnings(try(fetch_survey(1), silent = TRUE))
-  )
-  expect_gt(length(calls$reqs), 2)
+test_that("every request of every exported function is a GET without _method", {
+  calls <- survey_api(5)
+  all_surveys()
+  fetch_data_dictionary(123)
+  suppressMessages(fetch_survey(123, dir = withr::local_tempdir()))
+  expect_gte(length(calls$reqs), 4)
   for (req in calls$reqs) {
     expect_equal(req$method, "GET")
     expect_null(req$body)

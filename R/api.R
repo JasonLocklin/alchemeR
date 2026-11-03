@@ -7,6 +7,10 @@ api_base <- function() {
 # Seconds to wait before retry number `i` (429 and 5xx); both mocked in tests.
 api_backoff <- function(i) min(2^i, 30)
 
+# Requests sent in this R session; fetch_survey() reports the difference.
+api_stats <- new.env()
+api_stats$requests <- 0
+
 # Pause before the one restart at smaller pages.
 api_wait <- function() Sys.sleep(60)
 
@@ -83,6 +87,7 @@ api_get <- function(
   }
 
   req <- api_request(path, query, token, secret_key)
+  api_stats$requests <- api_stats$requests + 1
 
   resp <- tryCatch(
     httr2::req_perform(req),

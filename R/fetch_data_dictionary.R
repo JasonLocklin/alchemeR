@@ -17,7 +17,9 @@
 #' `ALCHEMER_API_SECRET`.
 
 #' @return
-#' A data frame of question numbers and question labels
+#' A tibble with one row per answer option: `question_id` (the column name in
+#' the survey data), `qid`, `parent`, `type`, `base_type`, `r_type`, `label`,
+#' `option_id`, `option_label`, `option_value`, `page` and `order`.
 #' @export
 #'
 #' @examples
@@ -30,29 +32,5 @@ fetch_data_dictionary <- function(
   token = Sys.getenv("ALCHEMER_API_TOKEN"),
   secret_key = Sys.getenv("ALCHEMER_API_SECRET")
 ) {
-  pages <- api_get_all(
-    glue::glue("survey/{survey_id}/surveyquestion"),
-    token = token,
-    secret_key = secret_key
-  )
-  temp_df <- dplyr::bind_rows(lapply(pages, \(x) x$data))
-
-  # Coerce all columns in the nested data frames to character vectors
-  temp_df$options <- lapply(temp_df$options, function(x) {
-    if (is.null(x)) {
-      return(NULL)
-    }
-    as.data.frame(lapply(x, as.character), stringsAsFactors = FALSE)
-  })
-
-  temp_df |>
-    dplyr::select(id, "label" = title.English, options) |>
-    tidyr::unnest(options, names_sep = "_", keep_empty = TRUE) |>
-    dplyr::select(
-      "question_id" = id,
-      label,
-      options_id,
-      options_value
-    ) |>
-    dplyr::mutate(question_id = glue::glue("Q{question_id}"))
+  dictionary_from_definition(get_definition(survey_id, token, secret_key))
 }

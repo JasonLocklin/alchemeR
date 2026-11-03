@@ -20,7 +20,9 @@ Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 \code{ALCHEMER_API_SECRET}.}
 }
 \value{
-A data frame of question numbers and question labels
+A tibble with one row per answer option: \code{question_id} (the column name in
+the survey data), \code{qid}, \code{parent}, \code{type}, \code{base_type}, \code{r_type}, \code{label},
+\code{option_id}, \code{option_label}, \code{option_value}, \code{page} and \code{order}.
 }
 \description{
 A function that retrieves a data dictionary from an Alchemer survey.

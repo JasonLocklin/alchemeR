@@ -9,8 +9,9 @@
 #' `ALCHEMER_API_SECRET`.
 #'
 #' @return
-#' Data frame with all Alchemer surveys (up to 500; an error is raised if the
-#' account has more).
+#' A tibble with one row per survey (up to 500; an error is raised if the
+#' account has more): `id`, `title`, `status`, `type`, `team` (ids, comma
+#' separated), `created_on` and `modified_on` (Toronto time).
 #' @export
 #'
 #' @examples
@@ -25,7 +26,8 @@ all_surveys <- function(
     "survey",
     list(resultsperpage = 500, page = 1),
     token,
-    secret_key
+    secret_key,
+    simplify = FALSE
   )
 
   if (surveys$total_pages > 1) {
@@ -35,5 +37,15 @@ all_surveys <- function(
     )
   }
 
-  surveys$data
+  rows <- surveys$data
+  field <- \(name) vapply(rows, \(x) chr(x[[name]]), "")
+  dplyr::tibble(
+    id = as.integer(field("id")),
+    title = field("title"),
+    status = field("status"),
+    type = field("type"),
+    team = vapply(rows, \(x) paste(unlist(x$team), collapse = ","), ""),
+    created_on = parse_time(field("created_on")),
+    modified_on = parse_time(field("modified_on"))
+  )
 }

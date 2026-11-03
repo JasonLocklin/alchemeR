@@ -17,8 +17,9 @@ Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 \code{ALCHEMER_API_SECRET}.}
 }
 \value{
-Data frame with all Alchemer surveys (up to 500; an error is raised if the
-account has more).
+A tibble with one row per survey (up to 500; an error is raised if the
+account has more): \code{id}, \code{title}, \code{status}, \code{type}, \code{team} (ids, comma
+separated), \code{created_on} and \code{modified_on} (Toronto time).
 }
 \description{
 Retrieve all surveys in Alchemer

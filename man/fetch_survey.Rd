@@ -8,11 +8,15 @@ fetch_survey(
   survey_id,
   token = Sys.getenv("ALCHEMER_API_TOKEN"),
   secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
-  survey_name = "survey_data"
+  dir = ".",
+  refresh = c("auto", "full", "local"),
+  min_age = 600,
+  full_refresh_days = 90,
+  include_test = FALSE
 )
 }
 \arguments{
-\item{survey_id}{Alchemer survey number, retrieved from survey URL}
+\item{survey_id}{Alchemer survey number, retrieved from the survey URL.}
 
 \item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
 Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
@@ -20,18 +24,33 @@ Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 \item{secret_key}{Alchemer API secret key. Defaults to the environment variable
 \code{ALCHEMER_API_SECRET}.}
 
-\item{survey_name}{Name of survey}
+\item{dir}{Folder for the \verb{survey_<id>.rds} file.}
+
+\item{refresh}{\code{"auto"} (default) uses the local file if it was written less than
+\code{min_age} seconds ago and pulls from Alchemer otherwise; \code{"full"} always
+pulls everything; \code{"local"} reads the file and makes no API call.}
+
+\item{min_age}{Seconds during which the local file counts as fresh.}
+
+\item{full_refresh_days}{Pull everything again if the oldest rows are older than this many days and
+the survey received new or changed responses.}
+
+\item{include_test}{Include responses marked as test data?}
 }
 \value{
-Downloaded file of survey responses
+A tibble with one row per response: \code{survey_id}, system columns, one column
+per question (named \verb{Q<id>}, or \verb{Q<id>_<option id>} for checkbox and rank
+items; the question text is the column's \code{label} attribute), \verb{url_*} columns
+for single sign-on surveys, and \code{fetched_at}. \code{attr(x, "alchemer")} holds the
+survey metadata and the data dictionary.
 }
 \description{
-This function retrieves survey data from an Alchemer account and saves a
-.csv file in a project folder. Requires user to have set up an API with
-Alchemer, including a token and secret key
+Downloads the responses of one survey into a labelled tibble and keeps a
+copy in \verb{survey_<id>.rds} in \code{dir}, so the data can be read again without
+calling the API. Requires an Alchemer API token and secret key.
 }
 \examples{
 \dontrun{
-fetch_survey("SURVEY_ID", survey_name = "SURVEY_NAME")
+df <- fetch_survey(123)
 }
 }
