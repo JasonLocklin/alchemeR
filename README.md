@@ -9,7 +9,7 @@
 <!-- badges: end -->
 
 The goal of alchemeR is to provide tools to access Alchemer survey data
-from their API and pull into an R environment. More informtion on the
+from their API and pull into an R environment. More information on the
 Alchemer API and set up can be found here:
 <https://apihelp.alchemer.com/help>
 
@@ -48,8 +48,9 @@ dict <- fetch_data_dictionary(123)              # one row per answer option
 ```
 
 `fetch_survey()` prints one line saying what it did, for example
-`Survey 123: incremental pull (37 rows changed), 4 requests, 2.1 s`. Use
-`suppressMessages()` to silence it.
+`Survey 123: incremental pull (37 rows changed), 4 requests, 2.1 s`. The
+request count is the number of API calls; a call retried after a rate limit
+or server error counts once. Use `suppressMessages()` to silence the line.
 
 ### What happens when you run it again
 

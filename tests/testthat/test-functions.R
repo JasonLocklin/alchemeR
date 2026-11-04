@@ -101,6 +101,8 @@ test_that("a survey id that is not a number is rejected before any request", {
     fetch_survey("1/surveyresponse", dir = withr::local_tempdir()),
     "survey number"
   )
+  expect_error(fetch_data_dictionary("1/surveyresponse"), "survey number")
+  expect_error(fetch_survey(c(1, 2)), "one survey number")
   expect_length(calls$reqs, 0)
 })
 

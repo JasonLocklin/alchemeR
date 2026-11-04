@@ -56,10 +56,7 @@ fetch_survey <- function(
   include_test = FALSE
 ) {
   refresh <- match.arg(refresh)
-  survey_id <- format(survey_id, scientific = FALSE, trim = TRUE)
-  if (!grepl("^[0-9]+$", survey_id)) {
-    stop("survey_id must be the survey number.", call. = FALSE)
-  }
+  survey_id <- check_survey_id(survey_id)
   path <- file.path(dir, paste0("survey_", survey_id, ".rds"))
   started <- Sys.time()
   requests <- api_stats$requests
@@ -154,6 +151,16 @@ fetch_survey <- function(
   out
 }
 
+# The survey number as text ("50000000", never "5e+07"); anything else is an
+# error before any request or file path is built.
+check_survey_id <- function(survey_id) {
+  id <- format(survey_id, scientific = FALSE, trim = TRUE)
+  if (length(id) != 1 || !grepl("^[0-9]+$", id)) {
+    stop("survey_id must be one survey number.", call. = FALSE)
+  }
+  id
+}
+
 # Why the local file cannot be updated incrementally; NULL if it can.
 full_reason <- function(refresh, local, include_test) {
   meta <- attr(local, "alchemer")
@@ -206,8 +213,7 @@ pull_survey <- function(
     paste0("survey/", survey_id, "/surveyresponse"),
     do.call(filter_query, base_filters(include_test)),
     token = token,
-    secret_key = secret_key,
-    simplify = FALSE
+    secret_key = secret_key
   )
   out <- parse_pull(pages, dict, def, survey_id)
   finish(out, dict, def, survey_id, include_test, pages[[1]]$total_count)
@@ -269,8 +275,7 @@ update_local <- function(
         list(...)
       ),
       token,
-      secret_key,
-      simplify = FALSE
+      secret_key
     )
   }
 
@@ -300,10 +305,9 @@ update_local <- function(
       )
     ),
     token = token,
-    secret_key = secret_key,
-    simplify = FALSE
+    secret_key = secret_key
   )
-  new <- parse_pull(pages, dictionary_from_definition(def), def, survey_id)
+  new <- parse_pull(pages, meta$dictionary, def, survey_id)
   # Rows that are new or have a different update time than the stored copy.
   i <- match(new$id, local$id)
   n_changed <- sum(

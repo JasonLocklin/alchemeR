@@ -26,8 +26,7 @@ all_surveys <- function(
     "survey",
     list(resultsperpage = 500, page = 1),
     token,
-    secret_key,
-    simplify = FALSE
+    secret_key
   )
 
   if (surveys$total_pages > 1) {

@@ -11,7 +11,7 @@ api_backoff <- function(i) min(2^i, 30)
 api_stats <- new.env()
 api_stats$requests <- 0
 
-# Pause before the one restart at smaller pages.
+# Pause before a restart of a pull: lets Alchemer's 60 s GET cache expire.
 api_wait <- function() Sys.sleep(60)
 
 api_is_transient <- function(resp) {
@@ -55,16 +55,15 @@ api_request <- function(path, query, token, secret_key) {
     httr2::req_error(is_error = \(resp) FALSE)
 }
 
-# GET one path and return the parsed JSON body. Errors are one line and never
-# contain the credentials. A page that still fails with a 5xx or a network
+# GET one path and return the parsed JSON body (lists, as in the JSON).
+# Errors are one line and never contain the credentials. A page that still fails with a 5xx or a network
 # error after the retries is signalled as class "alchemer_timeout" so the
 # pager can fall back to smaller pages.
 api_get <- function(
   path,
   query = list(),
   token = Sys.getenv("ALCHEMER_API_TOKEN"),
-  secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
-  simplify = TRUE
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
 ) {
   if (!nzchar(token) || !nzchar(secret_key)) {
     stop(
@@ -96,11 +95,7 @@ api_get <- function(
 
   status <- httr2::resp_status(resp)
   body <- tryCatch(
-    jsonlite::fromJSON(
-      httr2::resp_body_string(resp),
-      simplifyVector = simplify,
-      flatten = simplify
-    ),
+    jsonlite::fromJSON(httr2::resp_body_string(resp), simplifyVector = FALSE),
     error = \(e) NULL
   )
   if (status >= 500) {
@@ -114,9 +109,12 @@ api_get <- function(
 }
 
 # GET every page of a list endpoint and return the page bodies. Checks that
-# the rows received equal `total_count`; never stops at a page cap. If a page
-# times out after the retries, wait and restart the whole pull once at 100 rows
-# per page.
+# the rows received equal `total_count`; never stops at a page cap.
+# - Rows differ from `total_count` (a response was submitted or deleted while
+#   the pages were read): wait, then restart the pull once; error if it
+#   differs again.
+# - A page times out after the retries: wait, then restart the whole pull once
+#   at 100 rows per page.
 api_get_all <- function(path, query = list(), per_page = 500, ...) {
   pull <- function(n) {
     get_page <- \(p) {
@@ -139,20 +137,33 @@ api_get_all <- function(path, query = list(), per_page = 500, ...) {
     )
     rows <- sum(vapply(pages, \(x) NROW(x$data), numeric(1)))
     if (rows != total_count) {
-      stop(
+      msg <- paste0(
         "GET ",
         path,
         ": received ",
         rows,
         " rows but total_count is ",
-        total_count,
-        call. = FALSE
+        total_count
       )
+      stop(errorCondition(msg, class = "alchemer_count", call = NULL))
     }
     pages
   }
+  # Alchemer answers an identical GET within 60 s from its cache, so the
+  # restart waits first; otherwise it would get the same stale pages back.
+  pull_twice <- function(n) {
+    tryCatch(pull(n), alchemer_count = function(e) {
+      message(
+        conditionMessage(e),
+        " (responses changed during the download); waiting 60 s, ",
+        "then downloading again."
+      )
+      api_wait()
+      pull(n)
+    })
+  }
   tryCatch(
-    pull(per_page),
+    pull_twice(per_page),
     alchemer_timeout = function(e) {
       if (per_page <= 100) {
         stop(e)
@@ -161,7 +172,7 @@ api_get_all <- function(path, query = list(), per_page = 500, ...) {
         "A page timed out; waiting 60 s, then retrying at 100 rows per page."
       )
       api_wait()
-      pull(100)
+      pull_twice(100)
     }
   )
 }

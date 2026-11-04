@@ -106,8 +106,7 @@ get_definition <- function(survey_id, token, secret_key) {
   def <- api_get(
     paste0("survey/", survey_id),
     token = token,
-    secret_key = secret_key,
-    simplify = FALSE
+    secret_key = secret_key
   )
   if (is.null(def$data)) def else def$data
 }

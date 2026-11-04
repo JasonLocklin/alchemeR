@@ -43,3 +43,6 @@
 * Requests are throttled and retried on rate limits and server errors; the API
   token never appears in an error message.
 * All API calls are read-only (GET).
+* A response submitted or deleted while a multi-page download runs no longer
+  makes the download fail: the pull is restarted once, and it is an error
+  only if the count differs again.

@@ -11,7 +11,7 @@ fetch_data_dictionary(
 )
 }
 \arguments{
-\item{survey_id}{Alchemer survey number, retrieved from survey URL}
+\item{survey_id}{Alchemer survey number, retrieved from the survey URL.}
 
 \item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
 Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
@@ -21,17 +21,21 @@ Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 }
 \value{
 A tibble with one row per answer option: \code{question_id} (the column name in
-the survey data), \code{qid}, \code{parent}, \code{type}, \code{base_type}, \code{r_type}, \code{label},
-\code{option_id}, \code{option_label}, \code{option_value}, \code{page} and \code{order}.
+the survey data), \code{qid}, \code{parent} (the table question of a table row),
+\code{type}, \code{base_type}, \code{r_type} (\code{"double"} or \code{"character"}), \code{label} (the
+column label), \code{option_id}, \code{option_label} (the option text),
+\code{option_value} (the reporting value, which is what a choice answer holds in
+the survey data), \code{page} and \code{order}.
 }
 \description{
-A function that retrieves a data dictionary from an Alchemer survey.
-Requires user to have set up an API with Alchemer, including
-a token and secret key. If custom reporting values are used in Alchemer, then
-the function will download the custom value.
+Reads the survey definition (one request) and returns the data dictionary:
+one row per answer option of every question that holds an answer, in
+questionnaire order. It is the same dictionary that \code{\link[=fetch_survey]{fetch_survey()}} stores
+in \code{attr(x, "alchemer")$dictionary}. Requires an Alchemer API token and
+secret key.
 }
 \examples{
 \dontrun{
-fetch_data_dictionary("SURVEY_ID")
+dict <- fetch_data_dictionary(123)
 }
 }

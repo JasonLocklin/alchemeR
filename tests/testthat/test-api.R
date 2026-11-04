@@ -80,7 +80,7 @@ test_that("api_get_all collects every page (more than 250 of them)", {
   })
   pages <- api_get_all("survey/1/surveyresponse")
   expect_length(pages, 300)
-  expect_equal(pages[[300]]$data$id, 300)
+  expect_equal(pages[[300]]$data[[1]]$id, 300)
 })
 
 test_that("api_get_all errors when rows differ from total_count", {
@@ -93,7 +93,30 @@ test_that("api_get_all errors when rows differ from total_count", {
       data = list(list(id = 1))
     ))
   })
-  expect_error(api_get_all("survey/1/surveyresponse"), "received 1 rows")
+  expect_error(
+    expect_message(api_get_all("survey/1/surveyresponse"), "downloading again"),
+    "received 1 rows"
+  )
+})
+
+test_that("a response submitted during the pull restarts it once", {
+  n <- 600
+  calls <- mock_api(\(req) {
+    # a student submits after page 1 of the first pull has been read
+    if (length(calls$reqs) == 2) {
+      n <<- 601
+    }
+    page_response(req, n, \(i) list(id = i))
+  })
+  waited <- 0
+  local_mocked_bindings(api_wait = \() waited <<- waited + 1)
+  expect_message(
+    pages <- api_get_all("survey/1/surveyresponse"),
+    "received 601 rows but total_count is 600.*waiting 60 s"
+  )
+  expect_length(calls$reqs, 4) # 2 pages, then 2 pages again
+  expect_equal(waited, 1) # Alchemer caches identical GETs for 60 s
+  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), 601)
 })
 
 test_that("a timeout restarts the whole pull once at 100 per page", {
