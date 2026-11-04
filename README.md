@@ -43,7 +43,7 @@ library(alchemeR)
 
 all_surveys()                                   # one row per survey
 
-df   <- fetch_survey(123)                       # a labelled tibble; keeps ./survey_123.rds
+df   <- fetch_survey(123, dir = "data_raw")       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
 dict <- fetch_data_dictionary(123)              # one row per answer option
 ```
 
@@ -76,7 +76,10 @@ dict <- fetch_data_dictionary(123)              # one row per answer option
   text), then one column per answer in questionnaire order: `Q<id>`, or
   `Q<id>_<option id>` for each option of checkbox and rank items (table
   rows use their own ids), and `fetched_at`. Single sign-on surveys also
-  get `url_<name>` columns; other URL variables are not kept.
+  get `url_<name>` columns (a URL-shaped name such as
+  `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname`
+  becomes `url_givenname`, or its full cleaned name if two would clash);
+  other URL variables are not kept.
 - Question text is the `label` attribute of each column (shown by
   RStudio’s viewer, `gtsummary`, `sjPlot`). `bind_rows()` drops labels.
 - Numeric text boxes, sliders and rank items are numbers; everything
@@ -96,6 +99,36 @@ dict <- fetch_data_dictionary(123)              # one row per answer option
   values and open-text answers are returned as collected.
 - Responses deleted in Alchemer disappear from the file at the next full
   download (or when they fall in the recent window).
+
+### Recipes
+
+``` r
+# Complete responses since a date, one per respondent (most answers, then latest)
+library(dplyr)
+answers <- c("Q20", "Q21", "Q22")                 # the questions that matter
+df |>
+  filter(
+    status == "Complete",
+    date_submitted >= as.POSIXct("2026-10-06", tz = "America/Toronto")
+  ) |>
+  mutate(n_answered = rowSums(!is.na(pick(all_of(answers))))) |>
+  filter(n_answered > 0) |>
+  arrange(desc(n_answered), desc(id)) |>
+  distinct(url_NameID, .keep_all = TRUE)           # single sign-on id; text, join it as text
+
+# Question text (the column label) instead of retyping it
+purrr::map_chr(df[answers], \(x) attr(x, "label"))
+```
+
+- **Dates are date-times in Toronto time.** Compare them with a
+  date-time as above. Do not use `as.Date()` on them: it takes the UTC
+  day, so an evening response (after 8 p.m. in summer) lands on the next
+  day.
+- **Ids from single sign-on are text.** Keep leading zeros by joining
+  text to text (`student_no` in your student table is text too).
+- **A warning about answers “not placed in a column”** means the survey
+  contains an answer shape the package does not know; some answers are
+  missing from the table. Please report it.
 
 ### Several surveys, other tools
 

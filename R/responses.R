@@ -92,6 +92,35 @@ answer_values <- function(el, cols, row = NULL) {
   stats::setNames(value, paste0("Q", el$id))
 }
 
+# Number of non-empty answers anywhere in a survey_data object: every `answer`
+# field that holds something, a RANK answer counted once per ranked option. It
+# does not depend on element types, so it still counts what the parser cannot place.
+count_answers <- function(x) {
+  if (!is.list(x)) {
+    return(0)
+  }
+  sum(vapply(
+    seq_along(x),
+    \(i) {
+      v <- x[[i]]
+      if (!identical(names(x)[i], "answer")) {
+        count_answers(v)
+      } else if (length(v) == 0) {
+        0
+      } else if (!is.list(v)) {
+        as.numeric(!is.na(v[[1]]) && as.character(v[[1]]) != "")
+      } else if (!is.null(v$signature)) {
+        as.numeric(!is.na(chr(v$name)) && nzchar(chr(v$name)))
+      } else if (is.list(v[[1]]) && !is.null(v[[1]]$rank)) {
+        sum(vapply(v, \(r) !is.na(chr(r$rank)) && nzchar(chr(r$rank)), NA))
+      } else {
+        1
+      }
+    },
+    0
+  ))
+}
+
 parse_responses <- function(pages, dict, sso = FALSE) {
   resp <- unlist(lapply(pages, \(p) p$data), recursive = FALSE)
   cols <- unique(dict$question_id)
@@ -121,6 +150,19 @@ parse_responses <- function(pages, dict, sso = FALSE) {
   )
   m[cbind(rep(seq_along(resp), n), match(found, cols))] <- unlist(answers)
   m[!is.na(m) & m == ""] <- NA
+
+  # Every non-empty answer in the raw data must have landed in a column
+  raw_answers <- sum(vapply(resp, \(r) count_answers(r$survey_data), 0))
+  if (raw_answers > sum(!is.na(m))) {
+    warning(
+      raw_answers - sum(!is.na(m)),
+      " of ",
+      raw_answers,
+      " answers in the raw data were not placed in a column. ",
+      "The survey has an answer shape this package does not know; please report it.",
+      call. = FALSE
+    )
+  }
 
   out <- dplyr::tibble(
     id = one(\(r) as.integer(r$id), 1L),
@@ -158,7 +200,18 @@ parse_responses <- function(pages, dict, sso = FALSE) {
   if (sso) {
     urls <- lapply(resp, \(r) vapply(r$url_variables, \(v) chr(v$value), ""))
     raw <- unique(unlist(lapply(urls, names)))
-    safe <- paste0("url_", gsub("[^A-Za-z0-9]+", "_", raw))
+    # URL-shaped claim names (http://.../claims/givenname) use their last segment
+    # when that is unique; any clash keeps the full name.
+    full <- gsub("[^A-Za-z0-9]+", "_", raw)
+    short <- ifelse(
+      grepl("/", raw),
+      gsub("[^A-Za-z0-9]+", "_", sub(".*/", "", sub("/+$", "", trimws(raw)))),
+      full
+    )
+    safe <- paste0(
+      "url_",
+      ifelse(short %in% short[duplicated(short)], full, short)
+    )
     if (anyDuplicated(safe)) {
       stop(
         "URL variable names collide after cleaning: ",

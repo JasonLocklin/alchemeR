@@ -371,6 +371,7 @@ write_local <- function(df, path) {
   on.exit(unlink(tmp))
   tryCatch(
     {
+      dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
       saveRDS(df, tmp)
       if (!suppressWarnings(file.rename(tmp, path))) {
         stop("could not replace ", path)

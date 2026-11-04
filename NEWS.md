@@ -8,7 +8,8 @@
   argument is gone; new arguments are `dir`, `refresh`, `min_age`,
   `full_refresh_days` and `include_test` (test data is excluded by default).
 * Columns are named from the survey definition (`Q<id>`, `Q<id>_<option id>`
-  for checkbox and rank items, `url_<name>` for single sign-on surveys), in
+  for checkbox and rank items, `url_<name>` for single sign-on surveys; a URL-shaped
+  name such as `.../claims/givenname` becomes `url_givenname` unless two clash), in
   questionnaire order and present even when nobody answered. Question text is
   the column's `label` attribute. Numeric items (numeric text boxes, sliders,
   ranks) are numbers; dates are Toronto-time date-times; `is_test_data` is
@@ -28,6 +29,9 @@
   account and reports failures.
 * One message per `fetch_survey()` call says what it did, why, and how many
   requests it needed.
+* `fetch_survey()` creates `dir` if it does not exist.
+* A warning is raised when answers in the raw data could not be placed in a
+  column, so a survey with an unknown answer shape cannot lose data silently.
 
 ## Bug fixes
 

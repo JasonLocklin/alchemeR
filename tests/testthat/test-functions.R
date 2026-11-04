@@ -177,3 +177,11 @@ test_that("a round numeric survey id is not turned into scientific notation", {
   expect_error(fetch_survey(50000000, dir = withr::local_tempdir()))
   expect_match(calls$reqs[[1]]$url, "/survey/50000000\\?")
 })
+
+test_that("a folder that does not exist yet is created for the file", {
+  dir <- file.path(withr::local_tempdir(), "data", "raw")
+  survey_api(2)
+  out <- suppressMessages(fetch_survey(123, dir = dir))
+  expect_equal(nrow(out), 2)
+  expect_true(file.exists(file.path(dir, "survey_123.rds")))
+})

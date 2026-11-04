@@ -165,7 +165,7 @@ test_that("url variables appear for SSO surveys only, with safe names", {
     response(2, full_answers())
   )
   out <- parse_responses(list(list(data = rows)), dict(), sso = TRUE)
-  expect_equal(out$url_https_idp_claim_email, c("a@b.org", NA))
+  expect_equal(out$url_email, c("a@b.org", NA)) # last segment of a URL-shaped name
   expect_equal(out$url_src, c("x", NA))
   expect_false(any(grepl(
     "^url_",
@@ -218,4 +218,52 @@ test_that("a radio grid row maps to one column, whichever option cell holds it",
   a$`9` <- NULL
   out <- parse_responses(pages_of(response(1, a)), dict())
   expect_equal(as.vector(out$Q9), "Yes")
+})
+
+test_that("URL-shaped variable names use the last segment unless that clashes", {
+  claims <- "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/"
+  uv <- list(
+    list(value = "Ann"),
+    list(value = "x"),
+    list(value = "y"),
+    list(value = "z")
+  )
+  names(uv) <- c(
+    paste0(claims, "givenname"),
+    "NameID",
+    "http://a.org/id",
+    "http://b.org/id"
+  )
+  out <- parse_responses(
+    pages_of(response(1, full_answers(), url_variables = uv)),
+    dict(),
+    sso = TRUE
+  )
+  expect_equal(
+    grep("^url_", names(out), value = TRUE),
+    c("url_givenname", "url_NameID", "url_http_a_org_id", "url_http_b_org_id")
+  )
+  expect_equal(out$url_givenname, "Ann")
+})
+
+test_that("a blank rank is NA and raises no warning", {
+  a <- full_answers()
+  a$`15`$answer <- list(
+    list(id = 10030, option = "First", rank = 1),
+    list(id = 10031, option = "Second", rank = "")
+  )
+  expect_no_warning(out <- parse_responses(pages_of(response(1, a)), dict()))
+  expect_equal(c(out$Q15_10030, out$Q15_10031), c(1, NA))
+})
+
+test_that("an answer that cannot be placed in a column raises a warning", {
+  a <- full_answers()
+  a$`4`$answer <- "stray" # a checkbox element that also carries an element-level answer
+  expect_warning(
+    parse_responses(pages_of(response(1, a)), dict()),
+    "1 of 12 answers in the raw data were not placed"
+  )
+  b <- full_answers()
+  b$`6` <- NULL # nothing lost when an answer is simply absent
+  expect_no_warning(parse_responses(pages_of(response(1, b)), dict()))
 })
