@@ -26,7 +26,9 @@
 ## New
 
 * `inst/quarto/Archive_account.qmd` keeps an RDS file for every survey of an
-  account and reports failures.
+  account and reports, per survey, the status (ok, warning, error), the warnings
+  and errors, the run message, the newest response update, the request count
+  and the run settings. Each run appends its rows to `archive_log.csv`.
 * One message per `fetch_survey()` call says what it did, why, and how many
   requests it needed.
 * `fetch_survey()` creates `dir` if it does not exist.

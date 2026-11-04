@@ -121,3 +121,5 @@ Copy the report and render it with Quarto:
 file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".")
 # quarto render Archive_account.qmd -P archive_dir:my_archive
 ```
+
+The report lists each survey's status, warnings and errors, and every run appends to `archive_log.csv` in the archive folder.
