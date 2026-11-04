@@ -16,7 +16,8 @@
 #' `ALCHEMER_API_SECRET`.
 #'
 #' @param dir
-#' Folder for the `survey_<id>.rds` file.
+#' Folder for the `survey_<id>.rds` file, relative to the working directory.
+#' It is created if it does not exist.
 #'
 #' @param refresh
 #' `"auto"` (default) uses the local file if it was written less than
@@ -49,7 +50,7 @@ fetch_survey <- function(
   survey_id,
   token = Sys.getenv("ALCHEMER_API_TOKEN"),
   secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
-  dir = ".",
+  dir = "data_raw",
   refresh = c("auto", "full", "local"),
   min_age = 600,
   full_refresh_days = 90,

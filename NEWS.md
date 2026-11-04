@@ -3,7 +3,8 @@
 ## Breaking changes
 
 * `fetch_survey()` now returns a labelled tibble and keeps `survey_<id>.rds` in
-  `dir` instead of writing a CSV. It updates the file incrementally and makes no
+  `dir` (default `"data_raw"`, relative to the working directory, created if missing)
+  instead of writing a CSV. It updates the file incrementally and makes no
   request at all within `min_age` seconds of the last check. The `survey_name`
   argument is gone; new arguments are `dir`, `refresh`, `min_age`,
   `full_refresh_days` and `include_test` (test data is excluded by default).

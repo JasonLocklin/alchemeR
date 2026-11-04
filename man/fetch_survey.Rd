@@ -8,7 +8,7 @@ fetch_survey(
   survey_id,
   token = Sys.getenv("ALCHEMER_API_TOKEN"),
   secret_key = Sys.getenv("ALCHEMER_API_SECRET"),
-  dir = ".",
+  dir = "data_raw",
   refresh = c("auto", "full", "local"),
   min_age = 600,
   full_refresh_days = 90,
@@ -24,7 +24,8 @@ Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 \item{secret_key}{Alchemer API secret key. Defaults to the environment variable
 \code{ALCHEMER_API_SECRET}.}
 
-\item{dir}{Folder for the \verb{survey_<id>.rds} file.}
+\item{dir}{Folder for the \verb{survey_<id>.rds} file, relative to the working directory.
+It is created if it does not exist.}
 
 \item{refresh}{\code{"auto"} (default) uses the local file if it was written less than
 \code{min_age} seconds ago and pulls from Alchemer otherwise; \code{"full"} always

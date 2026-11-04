@@ -95,6 +95,7 @@ orphans <- setdiff(
 ## This run
 
 ```{r}
+#| label: run-summary
 #| echo: false
 knitr::kable(data.frame(
   item = c("Run started", "alchemeR", "R", "archive_dir", "refresh", "min_age (s)",
@@ -120,6 +121,7 @@ downloaded the survey; a later run that only reads the file reports it as ok.
 `archive_log.csv` keeps the earlier runs.
 
 ```{r}
+#| label: issues
 #| echo: false
 issues <- overview[overview$status != "ok", c("id", "title", "status", "problems")]
 if (nrow(issues) > 0) knitr::kable(issues) else cat("None.")
@@ -131,6 +133,7 @@ if (nrow(issues) > 0) knitr::kable(issues) else cat("None.")
 run message of `fetch_survey()`.
 
 ```{r}
+#| label: all-surveys
 #| echo: false
 knitr::kable(overview[order(overview$id), names(overview) != "problems"])
 ```
@@ -138,6 +141,7 @@ knitr::kable(overview[order(overview$id), names(overview) != "problems"])
 ## Files for surveys no longer on the account
 
 ```{r}
+#| label: orphans
 #| echo: false
 if (length(orphans) > 0) cat(paste0("survey_", orphans, ".rds"), sep = "\n") else cat("None.")
 ```

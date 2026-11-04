@@ -53,7 +53,7 @@ library(alchemeR)
 
 all_surveys()                                   # one row per survey
 
-df   <- fetch_survey(123, dir = "data_raw")       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
+df   <- fetch_survey(123)       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
 dict <- fetch_data_dictionary(123)              # one row per answer option
 ```
 
@@ -104,7 +104,7 @@ purrr::map_chr(df[answers], \(x) attr(x, "label"))
 
 * **Dates are date-times in Toronto time.** Compare them with a date-time as above. For the day, use `lubridate::date(date_submitted)` or `as.Date(date_submitted, tz = "America/Toronto")`; plain `as.Date()` takes the UTC day, so an evening response (after 7 p.m. in winter, 8 p.m. in summer) lands on the next day. Never parse them again with `ymd_hms()`: they are already date-times, and a value at exactly midnight becomes `NA` ("failed to parse").
 * **CSV and time zones.** A CSV file has no time zone: `readr::write_csv()` writes date-times in UTC (`2026-01-14T03:00:00Z` for 10 p.m. in Toronto), so a script that still writes Alchemer dates to CSV shows them 4–5 hours late to whatever reads the file. If a CSV is needed, write Toronto text first: `mutate(across(where(lubridate::is.POSIXct), \(x) format(x, "%Y-%m-%d %H:%M:%S")))`. The `.rds` file (and parquet) keep the instant.
-* **Scheduled scripts:** give `dir` explicitly. Task Scheduler does not start R in your project folder (unless "Start in" is set), so the default `dir = "."` would put the `.rds` files somewhere else, or fail to write them and download everything again on every run.
+* **Scheduled scripts:** give `dir` explicitly. Task Scheduler does not start R in your project folder (unless "Start in" is set), so the default `dir = "data_raw"` is relative to that folder and would put the `.rds` files somewhere else, or fail to write them and download everything again on every run.
 * **Ids from single sign-on are text.** Keep leading zeros by joining text to text (`student_no` in your student table is text too).
 * **A warning about answers "not placed in a column"** means the survey contains an answer shape the package does not know; some answers are missing from the table. Please report it.
 

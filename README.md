@@ -43,7 +43,7 @@ library(alchemeR)
 
 all_surveys()                                   # one row per survey
 
-df   <- fetch_survey(123, dir = "data_raw")       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
+df   <- fetch_survey(123)       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
 dict <- fetch_data_dictionary(123)              # one row per answer option
 ```
 
@@ -145,8 +145,9 @@ purrr::map_chr(df[answers], \(x) attr(x, "label"))
   The `.rds` file (and parquet) keep the instant.
 - **Scheduled scripts:** give `dir` explicitly. Task Scheduler does not
   start R in your project folder (unless “Start in” is set), so the
-  default `dir = "."` would put the `.rds` files somewhere else, or fail
-  to write them and download everything again on every run.
+  default `dir = "data_raw"` (relative to the working directory) would put
+  the `.rds` files somewhere else, or fail to write them and download
+  everything again on every run.
 - **Ids from single sign-on are text.** Keep leading zeros by joining
   text to text (`student_no` in your student table is text too).
 - **A warning about answers “not placed in a column”** means the survey
