@@ -39,7 +39,10 @@ one <- function(id) {
       fetch_survey(id, dir = dir, refresh = params$refresh, min_age = params$min_age,
                    include_test = TRUE),
       message = \(m) {
-        notes <<- c(notes, trimws(conditionMessage(m)))
+        note <- trimws(conditionMessage(m))
+        # httr2 shows each retry wait as a progress bar: one note is enough
+        if (grepl("retry backoff", note)) note <- "retried after a server error"
+        notes <<- union(notes, note)
         invokeRestart("muffleMessage")
       },
       warning = \(w) {
@@ -97,7 +100,7 @@ knitr::kable(data.frame(
   item = c("Run started", "alchemeR", "R", "archive_dir", "refresh", "min_age (s)",
            "Surveys on the account", "Requests sent"),
   value = c(format(run_at, "%Y-%m-%d %H:%M:%S %Z"), as.character(packageVersion("alchemeR")),
-            R.version.string, normalizePath(dir), params$refresh, params$min_age,
+            R.version.string, normalizePath(dir, winslash = "/"), params$refresh, params$min_age,
             nrow(surveys), sum(result$requests, na.rm = TRUE))
 ))
 ```

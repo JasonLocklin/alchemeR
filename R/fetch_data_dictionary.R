@@ -20,10 +20,12 @@
 #' @return
 #' A tibble with one row per answer option: `question_id` (the column name in
 #' the survey data), `qid`, `parent` (the table question of a table row),
-#' `type`, `base_type`, `r_type` (`"double"` or `"character"`), `label` (the
+#' `type`, `base_type`, `r_type` (`"double"` or `"character"`), `numeric_text`
+#' (`TRUE` for a text box set to numbers: text, cleaned and checked), `label` (the
 #' column label), `option_id`, `option_label` (the option text),
 #' `option_value` (the reporting value, which is what a choice answer holds in
-#' the survey data), `page` and `order`.
+#' the survey data), `page`, `row_id` (the row of a custom table, `NA`
+#' elsewhere) and `order`.
 #' @export
 #'
 #' @examples

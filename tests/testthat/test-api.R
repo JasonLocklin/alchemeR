@@ -63,7 +63,7 @@ test_that("transport errors never show the token", {
   })
   err <- expect_error(api_get("survey"), "GET survey")
   expect_false(grepl("TOK123|SEC456", conditionMessage(err)))
-  expect_s3_class(err, "alchemer_timeout")
+  expect_s3_class(err, "alchemer_error")
 })
 
 test_that("api_get_all collects every page (more than 250 of them)", {
@@ -100,11 +100,11 @@ test_that("api_get_all errors when rows differ from total_count", {
 })
 
 test_that("a response submitted during the pull restarts it once", {
-  n <- 600
+  n <- 300 # 2 pages of 250
   calls <- mock_api(\(req) {
     # a student submits after page 1 of the first pull has been read
     if (length(calls$reqs) == 2) {
-      n <<- 601
+      n <<- 301
     }
     page_response(req, n, \(i) list(id = i))
   })
@@ -112,31 +112,14 @@ test_that("a response submitted during the pull restarts it once", {
   local_mocked_bindings(api_wait = \() waited <<- waited + 1)
   expect_message(
     pages <- api_get_all("survey/1/surveyresponse"),
-    "received 601 rows but total_count is 600.*waiting 60 s"
+    "received 301 rows but total_count is 300.*waiting 60 s"
   )
   expect_length(calls$reqs, 4) # 2 pages, then 2 pages again
   expect_equal(waited, 1) # Alchemer caches identical GETs for 60 s
-  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), 601)
+  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), 301)
 })
 
-test_that("a timeout restarts the whole pull once at 100 per page", {
-  calls <- mock_api(\(req) {
-    if (query_of(req)$resultsperpage == "500") {
-      json(list(result_ok = FALSE, message = "timeout"), 500)
-    } else {
-      page_response(req, 250, \(i) list(id = i))
-    }
-  })
-  expect_message(
-    pages <- api_get_all("survey/1/surveyresponse"),
-    "100 rows per page"
-  )
-  expect_length(pages, 3)
-  per <- vapply(calls$reqs, \(r) query_of(r)$resultsperpage, "")
-  expect_equal(unique(per), c("500", "100"))
-})
-
-test_that("a timeout at 100 per page is an error", {
+test_that("a page that fails after its retries is an error", {
   mock_api(\(req) json(list(result_ok = FALSE), 500))
   expect_error(
     suppressMessages(api_get_all("survey/1/surveyresponse")),

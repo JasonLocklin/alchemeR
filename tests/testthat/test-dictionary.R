@@ -47,7 +47,9 @@ test_that("clean_label strips tags and entities", {
 test_that("r_type follows the item type, never the content", {
   d <- dictionary_from_definition(definition())
   type <- \(id) unique(d$r_type[d$question_id == id])
-  expect_equal(type("Q6"), "double") # force_numeric textbox
+  expect_equal(type("Q6"), "character") # force_numeric textbox: text, checked
+  expect_true(d$numeric_text[d$question_id == "Q6"])
+  expect_false(d$numeric_text[d$question_id == "Q7"])
   expect_equal(type("Q7"), "character") # plain textbox
   expect_equal(type("Q3"), "character") # numeric-looking choice codes stay text
   expect_equal(type("Q15_10030"), "double") # rank
@@ -80,4 +82,14 @@ test_that("fetch_data_dictionary makes one GET of the definition", {
   # unwrapped single object
   mock_api(\(req) json(c(list(result_ok = TRUE), definition())))
   expect_true("Q3" %in% fetch_data_dictionary(123)$question_id)
+})
+
+test_that("no answer-holding items: empty dictionary, all columns", {
+  def <- definition()
+  def$pages[[1]]$questions <- list(item(17, "INSTRUCTIONS", "Read this"))
+  expect_no_warning(d <- dictionary_from_definition(def))
+  expect_equal(nrow(d), 0)
+  expect_true(all(c("question_id", "r_type", "label", "order") %in% names(d)))
+  expect_no_warning(out <- parse_responses(pages_of(), d))
+  expect_equal(nrow(out), 0)
 })

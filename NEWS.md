@@ -8,15 +8,16 @@
   argument is gone; new arguments are `dir`, `refresh`, `min_age`,
   `full_refresh_days` and `include_test` (test data is excluded by default).
 * Columns are named from the survey definition (`Q<id>`, `Q<id>_<option id>`
-  for checkbox and rank items, `url_<name>` for single sign-on surveys; a URL-shaped
+  for checkbox, rank and textbox-list items, `Q<column id>_r<row>` for custom
+  tables (matrix), `url_<name>` for single sign-on surveys; a URL-shaped
   name such as `.../claims/givenname` becomes `url_givenname` unless two clash), in
   questionnaire order and present even when nobody answered. Question text is
-  the column's `label` attribute. Numeric items (numeric text boxes, sliders,
-  ranks) are numbers; dates are Toronto-time date-times; `is_test_data` is
+  the column's `label` attribute. Sliders, ranks and quiz scores are numbers; dates are Toronto-time date-times; `is_test_data` is
   logical. Choice questions hold the survey's reporting values.
 * `fetch_data_dictionary()` reads the survey definition (one request) and
   returns one row per option with new columns: `qid`, `parent`, `type`,
-  `base_type`, `r_type`, `label`, `option_id`, `option_label`, `option_value`,
+  `base_type`, `r_type`, `numeric_text`, `label`, `option_id`, `option_label`, `option_value`,
+  `row_id` (custom-table row),
   `page` and `order`.
 * `all_surveys()` returns tidy columns (`id`, `title`, `status`, `type`, `team`,
   `created_on`, `modified_on`).
@@ -45,6 +46,13 @@
 * Requests are throttled and retried on rate limits and server errors; the API
   token never appears in an error message.
 * All API calls are read-only (GET).
+* Text boxes set to numbers stay text (Alchemer does not enforce the setting,
+  and they often hold ids with leading zeros). The text is cleaned (spaces,
+  `1,000`, student numbers `123-456-789` → `123456789`, `n/a` → `NA`), and a
+  value that is still not a number raises a warning but is kept. The dictionary
+  has a new column `numeric_text` marking them.
+* Large surveys download about 4 times faster: pages of 250 rows, up to six
+  requested at once after the first (still at most 2 requests per second).
 * A response submitted or deleted while a multi-page download runs no longer
   makes the download fail: the pull is restarted once, and it is an error
   only if the count differs again.

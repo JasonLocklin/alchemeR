@@ -24,7 +24,7 @@ test_that("a full pull returns a labelled tibble and writes one RDS file", {
   survey_api(600)
   expect_message(
     out <- fetch_survey(123, dir = dir),
-    "Survey 123: full pull \\(no usable local file\\), 600 rows, 3 requests"
+    "Survey 123: full pull \\(no usable local file\\), 600 rows, 4 requests"
   )
   expect_equal(nrow(out), 600)
   expect_equal(names(out)[1], "survey_id")
@@ -164,7 +164,7 @@ test_that("a survey without responses gives a zero-row tibble with all columns",
   out <- suppressMessages(fetch_survey(123, dir = dir))
   expect_equal(nrow(out), 0)
   expect_true(all(c("survey_id", "Q3", "Q6", "fetched_at") %in% names(out)))
-  expect_type(out$Q6, "double")
+  expect_type(out$Q16, "double")
 })
 
 test_that("an unwrapped single object and a team array do not break parsing", {

@@ -55,7 +55,7 @@ test_that("labels, types and metadata survive a merge", {
   out <- refetch(x)
   expect_equal(attr(out$Q3, "label"), "Q3 colour ?")
   expect_equal(attr(out$Q4_10005, "label"), "Fruit: Apple")
-  expect_type(out$Q6, "double")
+  expect_type(out$Q16, "double")
   expect_equal(attr(out, "alchemer")$total_count, 6)
   expect_true("Q3" %in% attr(out, "alchemer")$dictionary$question_id)
   expect_identical(readRDS(x$file), out)
@@ -167,7 +167,7 @@ test_that("an incremental pull with no rows keeps every column", {
   out <- refetch(x)
   expect_equal(out$id, 2:4)
   expect_true(all(c("Q3", "Q6", "Q13", "fetched_at") %in% names(out)))
-  expect_type(out$Q6, "double")
+  expect_type(out$Q16, "double")
 })
 
 test_that("a failed incremental update leaves the file and its age untouched", {
@@ -201,6 +201,32 @@ test_that("a survey that was empty gets a full pull when responses arrive", {
   expect_equal(nrow(out), 0)
   Sys.setFileTime(file.path(dir, "survey_123.rds"), Sys.time() - 3600)
   calls$acct$add(2)
-  expect_message(out <- fetch_survey(123, dir = dir), "no stored update time")
+  expect_message(out <- fetch_survey(123, dir = dir), "first responses")
   expect_equal(nrow(out), 2)
+})
+
+test_that("an empty survey stays empty with 2 requests and no rewrite", {
+  dir <- withr::local_tempdir()
+  calls <- fake_account(0)
+  suppressMessages(fetch_survey(123, dir = dir))
+  file <- file.path(dir, "survey_123.rds")
+  Sys.setFileTime(file, Sys.time() - 3600)
+  before <- unname(tools::md5sum(file))
+  n <- length(calls$reqs)
+  expect_message(
+    out <- fetch_survey(123, dir = dir),
+    "unchanged \\(no responses\\), 2 requests"
+  )
+  expect_equal(length(calls$reqs) - n, 2)
+  expect_equal(unname(tools::md5sum(file)), before)
+  expect_equal(nrow(out), 0)
+})
+
+test_that("a file from an older parser is pulled again in full", {
+  x <- first_pull()
+  old <- readRDS(x$file)
+  attr(old, "alchemer")$schema_version <- 1L
+  saveRDS(old, x$file)
+  age_file(x)
+  expect_message(fetch_survey(123, dir = x$dir), "file format changed")
 })

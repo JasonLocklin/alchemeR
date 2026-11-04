@@ -123,8 +123,15 @@ fetch_survey <- function(
       # Nothing changed: record that we checked, without rewriting the file.
       suppressWarnings(Sys.setFileTime(path, Sys.time()))
       say(
-        "unchanged (latest update ",
-        format(meta$max_date_updated, "%Y-%m-%d %H:%M"),
+        "unchanged (",
+        if (nrow(local) == 0) {
+          "no responses"
+        } else {
+          paste(
+            "latest update",
+            format(meta$max_date_updated, "%Y-%m-%d %H:%M")
+          )
+        },
         ")"
       )
       return(local)
@@ -141,7 +148,7 @@ fetch_survey <- function(
       ": full refresh needed (",
       reason,
       "), about ",
-      ceiling(nrow(local) / 500) + 3,
+      ceiling(nrow(local) / api_per_page) + 3,
       " requests."
     )
   }
@@ -170,12 +177,17 @@ full_reason <- function(refresh, local, include_test) {
     "no usable local file"
   } else if (!identical(meta$include_test, include_test)) {
     "include_test changed"
-  } else if (!identical(meta$schema_version, 1L)) {
+  } else if (!identical(meta$schema_version, schema_version)) {
     "the file format changed"
-  } else if (is.na(meta$max_date_updated)) {
+  } else if (nrow(local) > 0 && is.na(meta$max_date_updated)) {
     "no stored update time"
   }
 }
+
+# Version of the parsed file. Bump it when parsing changes the stored data, so
+# every file is pulled again once (2: grid rows as elements, textbox lists,
+# numeric text boxes as text, custom tables, quiz scores).
+schema_version <- 2L
 
 # Filters for the response list: each argument is c(field, operator, value).
 filter_query <- function(...) {
@@ -246,7 +258,7 @@ finish <- function(out, dict, def, survey_id, include_test, total_count) {
           as.POSIXct(NA, tz = "America/Toronto")
         },
         include_test = include_test,
-        schema_version = 1L,
+        schema_version = schema_version,
         tz = "America/Toronto",
         package_version = as.character(utils::packageVersion("alchemeR")),
         dictionary = dict
@@ -291,6 +303,10 @@ update_local <- function(
       identical(as.numeric(latest), as.numeric(meta$max_date_updated))
   ) {
     return(list(data = local, n_changed = 0))
+  }
+  # An empty file has no watermark: its first responses come in a full pull.
+  if (nrow(local) == 0) {
+    return(list(reason = "first responses"))
   }
 
   # Everything updated since two days before the newest stored update.

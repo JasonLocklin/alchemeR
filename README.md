@@ -49,8 +49,9 @@ dict <- fetch_data_dictionary(123)              # one row per answer option
 
 `fetch_survey()` prints one line saying what it did, for example
 `Survey 123: incremental pull (37 rows changed), 4 requests, 2.1 s`. The
-request count is the number of API calls; a call retried after a rate limit
-or server error counts once. Use `suppressMessages()` to silence the line.
+request count is the number of API calls; a call retried after a rate
+limit or server error counts once. Use `suppressMessages()` to silence
+the line.
 
 ### What happens when you run it again
 
@@ -75,18 +76,25 @@ or server error counts once. Use `suppressMessages()` to silence the line.
 - Columns: `survey_id`, `id`, `status`, `is_test_data`, dates (Toronto
   time), `response_time`, `language`, `link_id`, `data_quality` (JSON
   text), then one column per answer in questionnaire order: `Q<id>`, or
-  `Q<id>_<option id>` for each option of checkbox and rank items (table
-  rows use their own ids), and `fetched_at`. Single sign-on surveys also
-  get `url_<name>` columns (a URL-shaped name such as
+  `Q<id>_<option id>` for each option of checkbox, rank and textbox-list
+  items (table rows use their own ids; a custom table cell is
+  `Q<column id>_r<row number>`), and `fetched_at`. Single sign-on
+  surveys also get `url_<name>` columns (a URL-shaped name such as
   `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname`
   becomes `url_givenname`, or its full cleaned name if two would clash);
   other URL variables are not kept.
 - Question text is the `label` attribute of each column (shown by
   RStudio’s viewer, `gtsummary`, `sjPlot`). `bind_rows()` drops labels.
-- Numeric text boxes, sliders and rank items are numbers; everything
-  else is text. A value in a numeric item that is not a number (for
-  example `12 kg`) becomes `NA`, with a warning that shows its shape but
-  not its value.
+- Sliders, rank and constant-sum items are numbers; everything else is
+  text. A value in one of them that is not a number becomes `NA`, with a
+  warning that shows its shape but not its value.
+- Text boxes set to “numbers” in Alchemer stay **text**: Alchemer does
+  not enforce the setting, and they often hold ids whose leading zeros
+  matter (`012345678`). The text is cleaned (spaces, `1,000` → `1000`,
+  student numbers `123-456-789` → `123456789`, `n/a` → `NA`), and
+  anything still not a number (for example `12 kg`) raises a warning
+  with its shape but is kept. For a real quantity, use `as.numeric()`;
+  the dictionary marks these columns `numeric_text`.
 - A choice answer holds the option’s *reporting value*, not its title.
   Recode with the dictionary:
   `dict |> dplyr::filter(question_id == "Q3") |> dplyr::select(option_value, option_label)`.
@@ -122,9 +130,23 @@ purrr::map_chr(df[answers], \(x) attr(x, "label"))
 ```
 
 - **Dates are date-times in Toronto time.** Compare them with a
-  date-time as above. Do not use `as.Date()` on them: it takes the UTC
-  day, so an evening response (after 8 p.m. in summer) lands on the next
-  day.
+  date-time as above. For the day, use `lubridate::date(date_submitted)`
+  or `as.Date(date_submitted, tz = "America/Toronto")`; plain
+  `as.Date()` takes the UTC day, so an evening response (after 7 p.m. in
+  winter, 8 p.m. in summer) lands on the next day. Never parse them
+  again with `ymd_hms()`: they are already date-times, and a value at
+  exactly midnight becomes `NA` (“failed to parse”).
+- **CSV and time zones.** A CSV file has no time zone:
+  `readr::write_csv()` writes date-times in UTC (`2026-01-14T03:00:00Z`
+  for 10 p.m. in Toronto), so a script that still writes Alchemer dates
+  to CSV shows them 4–5 hours late to whatever reads the file. If a CSV
+  is needed, write Toronto text first:
+  `mutate(across(where(lubridate::is.POSIXct), \(x) format(x, "%Y-%m-%d %H:%M:%S")))`.
+  The `.rds` file (and parquet) keep the instant.
+- **Scheduled scripts:** give `dir` explicitly. Task Scheduler does not
+  start R in your project folder (unless “Start in” is set), so the
+  default `dir = "."` would put the `.rds` files somewhere else, or fail
+  to write them and download everything again on every run.
 - **Ids from single sign-on are text.** Keep leading zeros by joining
   text to text (`student_no` in your student table is text too).
 - **A warning about answers “not placed in a column”** means the survey
@@ -148,4 +170,5 @@ file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".
 # quarto render Archive_account.qmd -P archive_dir:my_archive
 ```
 
-The report lists each survey's status, warnings and errors, and every run appends to `archive_log.csv` in the archive folder.
+The report lists each survey’s status, warnings and errors, and every
+run appends to `archive_log.csv` in the archive folder.

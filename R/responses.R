@@ -1,29 +1,42 @@
 # Pure functions: raw response pages (parsed with simplifyVector = FALSE) plus
 # the dictionary become one typed, labelled tibble.
 
-# "1,000" -> 1000, "N/A" -> NA. Anything else that is not a plain decimal
-# becomes NA with one warning naming the column and the shapes of the values.
-clean_number <- function(x, name = "column") {
+# Cleans the text of a numeric item: "1,000" -> "1000", "N/A" -> NA, and
+# student numbers "123-456-789" -> "123456789". What is still not a plain
+# decimal raises one warning naming the column and the shapes of the values.
+# as_text = TRUE (text boxes set to numbers) returns the cleaned text, leading
+# zeros kept and odd values left as they are; otherwise a number, odd values NA.
+# A regular expression decides what is a number, not as.numeric(), which
+# would also accept "1e5", "0x10" and "Inf".
+clean_number <- function(x, name = "column", as_text = FALSE) {
   x <- trimws(x)
   x[tolower(x) %in% c("", "na", "n/a", "none", "-")] <- NA
+  # Student numbers are often written 123-456-789: drop those dashes only
+  x <- sub("^\\(?(\\d{3})-(\\d{3})-(\\d{3})\\)?$", "\\1\\2\\3", x)
   has_commas <- grepl("^-?\\d{1,3}(,\\d{3})+(\\.\\d+)?$", x)
   x[has_commas] <- gsub(",", "", x[has_commas], fixed = TRUE)
   ok <- grepl("^-?(\\d+\\.?\\d*|\\.\\d+)$", x)
   bad <- x[!is.na(x) & !ok]
   if (length(bad) > 0) {
-    # Show the shape of the values (digits -> 9, letters -> a), never the
-    # values themselves: they can be identifiers.
-    shape <- gsub("[A-Za-z]", "a", gsub("[0-9]", "9", bad))
+    # The shape of the values (digits -> 9, letters -> a), never the values
+    # themselves: they can be identifiers.
+    shapes <- unique(gsub("[A-Za-z]", "a", gsub("[0-9]", "9", bad)))
     warning(
-      "Column ",
-      name,
-      ": ",
-      length(bad),
-      " value(s) are not numbers and were ",
-      "set to NA. Shapes: ",
-      paste0("'", utils::head(unique(shape), 5), "'", collapse = ", "),
+      paste0(
+        "Column ",
+        name,
+        ": ",
+        length(bad),
+        " value(s) are not numbers",
+        if (as_text) " (kept as text)." else " and were set to NA.",
+        " Shapes: ",
+        paste0("'", utils::head(shapes, 5), "'", collapse = ", ")
+      ),
       call. = FALSE
     )
+  }
+  if (as_text) {
+    return(x)
   }
   out <- rep(NA_real_, length(x))
   out[ok] <- as.numeric(x[ok])
@@ -56,12 +69,17 @@ answer_values <- function(el, cols, row = NULL) {
   # Real data: checkbox and grid elements have type "parent" and carry their
   # answers in `options` / `subquestions`, so the type is not checked here.
   if (length(el$subquestions) > 0) {
-    # Nested grid (probe H25): subquestions{row id: {option id: element}}.
-    # A checkbox row has a column per option (Q<row>_<option>); a radio row has
-    # one column Q<row>. Anything else keeps the element's own id and is
-    # reported as not in the definition.
+    # Grid rows come in two shapes. A row can be one element
+    # (subquestions{row id: element}), mapped by its own id like a top-level
+    # element. Or a map of option cells (probe H25:
+    # subquestions{row id: {option id: element}}): a checkbox row has a column
+    # per option (Q<row>_<option>), a radio row one column Q<row>. Anything
+    # else keeps the element's own id and is reported as not in the definition.
     return(flat(lapply(names(el$subquestions), \(r) {
       inner <- el$subquestions[[r]]
+      if (is.list(inner) && "id" %in% names(inner)) {
+        return(answer_values(inner, cols))
+      }
       flat(lapply(names(inner), \(k) {
         e <- inner[[k]]
         if (paste0("Q", r, "_", k) %in% cols) {
@@ -90,6 +108,58 @@ answer_values <- function(el, cols, row = NULL) {
     to_json(a)
   }
   stats::setNames(value, paste0("Q", el$id))
+}
+
+# MATRIX cells come keyed 10001, 10002, ... (ids not in the definition).
+# Each cell's piped_value is the id of its row (probe_final 2026-11-04: all
+# 8 154 cells), and a response may hold only some cells (rows shown by
+# piping). A cell's column is the first unused column of its row whose type
+# fits (the cells of a row come in column order); a cell that has no row, no
+# fitting column, or could fit several columns while some are missing, leaves
+# the element as it is: its answers are then kept under their own ids with
+# the "not in the survey definition" warning, never placed wrongly.
+matrix_cells <- function(el, m) {
+  cells <- el$subquestions[order(as.numeric(names(el$subquestions)))]
+  row <- match(vapply(cells, \(x) chr(x$piped_value), ""), m$row_ids)
+  col <- rep(NA_integer_, length(cells))
+  for (r in unique(row[!is.na(row)])) {
+    in_row <- which(row == r)
+    for (i in in_row) {
+      type <- chr(cells[[i]]$type)
+      fits <- which(
+        (m$types == type | (type == "parent" & m$types %in% multi_types)) &
+          !seq_along(m$cols) %in% col[in_row]
+      )
+      if (
+        length(fits) == 1 ||
+          (length(fits) > 1 && length(in_row) == length(m$cols))
+      ) {
+        col[i] <- fits[1]
+      }
+    }
+  }
+  if (anyNA(row) || anyNA(col)) {
+    return(el)
+  }
+  ids <- paste0(m$cols[col], "_r", row)
+  el$subquestions <- stats::setNames(
+    Map(\(x, id) utils::modifyList(x, list(id = id)), cells, ids),
+    ids
+  )
+  el
+}
+
+# The MATRIX items of a dictionary: columns in order, their types, row ids.
+matrices_of <- function(dict) {
+  d <- dict[!is.na(dict$row_id %||% NA), ]
+  lapply(split(d, d$parent), \(x) {
+    cols <- unique(x$qid)
+    list(
+      cols = cols,
+      types = x$type[match(cols, x$qid)],
+      row_ids = unique(x$row_id)
+    )
+  })
 }
 
 # Number of non-empty answers anywhere in a survey_data object: every `answer`
@@ -127,8 +197,15 @@ parse_responses <- function(pages, dict, sso = FALSE) {
   one <- \(f, type) vapply(resp, f, type)
 
   # survey_data is [] (an empty list) on a blank response
+  matrices <- matrices_of(dict)
   answers <- lapply(resp, \(r) {
-    flat(lapply(r$survey_data, answer_values, cols = cols))
+    flat(lapply(r$survey_data, \(el) {
+      m <- matrices[[chr(el$id)]]
+      if (!is.null(m)) {
+        el <- matrix_cells(el, m)
+      }
+      answer_values(el, cols)
+    }))
   })
   answers <- lapply(answers, \(a) a[!is.na(a)]) # a later NA must not overwrite
   n <- vapply(answers, length, 1L)
@@ -187,11 +264,14 @@ parse_responses <- function(pages, dict, sso = FALSE) {
   )
 
   numeric_cols <- unique(dict$question_id[dict$r_type == "double"])
+  numeric_text <- unique(dict$question_id[dict$numeric_text %in% TRUE])
   labels <- dict[!duplicated(dict$question_id), ]
   for (col in cols) {
     x <- unname(m[, col])
     if (col %in% numeric_cols) {
       x <- clean_number(x, col)
+    } else if (col %in% numeric_text) {
+      x <- clean_number(x, col, as_text = TRUE)
     }
     label <- labels$label[labels$question_id == col]
     out[[col]] <- if (length(label) == 1) structure(x, label = label) else x
