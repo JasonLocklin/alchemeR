@@ -1,0 +1,129 @@
+test_that("api_get returns the parsed body and sends a GET with credentials", {
+  calls <- mock_api(\(req) json(list(result_ok = TRUE, data = list(id = 1))))
+  body <- api_get("survey/1")
+  expect_equal(body$data$id, 1)
+  req <- calls$reqs[[1]]
+  expect_equal(req$method, "GET")
+  expect_equal(query_of(req)$api_token, "TOK123")
+})
+
+test_that("missing credentials fail before any request", {
+  calls <- mock_api(\(req) json(list(result_ok = TRUE)))
+  withr::local_envvar(ALCHEMER_API_TOKEN = "", ALCHEMER_API_SECRET = "")
+  expect_error(api_get("survey"), "credentials are missing")
+  expect_length(calls$reqs, 0)
+})
+
+test_that("the request is a throttled GET that retries 429, 5xx and timeouts", {
+  # httr2 mocks bypass retry and throttle, so check the policies themselves.
+  req <- api_request("survey", list(page = 1), "t", "s")
+  expect_equal(req$method, "GET")
+  expect_equal(req$policies$retry_max_tries, 5)
+  expect_true(req$policies$retry_on_failure)
+  expect_true(!is.null(req$policies$throttle_realm))
+  transient <- req$policies$retry_is_transient
+  expect_true(all(vapply(
+    c(429, 500, 502, 503, 504),
+    \(s) transient(json(list(), s)),
+    TRUE
+  )))
+  expect_false(transient(json(list(), 401)))
+
+  # 429: wait 30 s (or Retry-After) and say so; 5xx: the short backoff
+  after <- req$policies$retry_after
+  expect_message(expect_equal(after(json(list(), 429)), 30), "rate limit")
+  expect_message(
+    expect_equal(
+      after(httr2::response(429, headers = list(`Retry-After` = "7"))),
+      7
+    ),
+    "waiting 7 s"
+  )
+  expect_true(is.na(after(json(list(), 500))))
+})
+
+test_that("error bodies give a one-line error without credentials or URL", {
+  mock_api(\(req) {
+    json(list(result_ok = FALSE, code = 401, message = "Bad key TOK123"), 401)
+  })
+  err <- expect_error(api_get("survey/1"), "HTTP 401")
+  expect_false(grepl("TOK123|SEC456|api_token", conditionMessage(err)))
+  expect_length(strsplit(conditionMessage(err), "\n")[[1]], 1)
+})
+
+test_that("result_ok = FALSE with status 200 is an error", {
+  mock_api(\(req) json(list(result_ok = FALSE, message = "nope")))
+  expect_error(api_get("survey"), "nope")
+})
+
+test_that("transport errors never show the token", {
+  mock_api(\(req) {
+    stop(
+      "Could not connect to https://x/?api_token=TOK123&api_token_secret=SEC456"
+    )
+  })
+  err <- expect_error(api_get("survey"), "GET survey")
+  expect_false(grepl("TOK123|SEC456", conditionMessage(err)))
+  expect_s3_class(err, "alchemer_error")
+})
+
+test_that("api_get_all collects every page, in order", {
+  # 15 pages of one row each: more than one batch of api_parallel (6).
+  calls <- mock_api(\(req) {
+    p <- as.integer(query_of(req)$page)
+    json(list(
+      result_ok = TRUE,
+      total_count = 15,
+      total_pages = 15,
+      page = p,
+      data = list(list(id = p))
+    ))
+  })
+  pages <- api_get_all("survey/1/surveyresponse")
+  expect_equal(vapply(pages, \(x) x$data[[1]]$id, 1L), 1:15)
+})
+
+test_that("api_get_all errors when rows differ from total_count", {
+  mock_api(\(req) {
+    json(list(
+      result_ok = TRUE,
+      total_count = 5,
+      total_pages = 1,
+      page = 1,
+      data = list(list(id = 1))
+    ))
+  })
+  expect_error(
+    expect_message(api_get_all("survey/1/surveyresponse"), "downloading again"),
+    "received 1 rows"
+  )
+})
+
+test_that("a response submitted during the pull restarts it once", {
+  n <- 300 # 2 pages of 250
+  calls <- mock_api(\(req) {
+    # a student submits after page 1 of the first pull has been read
+    if (length(calls$reqs) == 2) {
+      n <<- 301
+    }
+    page_response(req, n, \(i) list(id = i))
+  })
+  waited <- 0
+  local_mocked_bindings(api_wait = \() waited <<- waited + 1)
+  expect_message(
+    pages <- api_get_all("survey/1/surveyresponse"),
+    "received 301 rows but total_count is 300.*waiting 60 s"
+  )
+  expect_length(calls$reqs, 4) # 2 pages, then 2 pages again
+  expect_equal(waited, 1) # Alchemer caches identical GETs for 60 s
+  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), 301)
+})
+
+test_that("a page that fails after its retries is an error", {
+  mock_api(\(req) json(list(result_ok = FALSE), 500))
+  expect_error(
+    suppressMessages(api_get_all("survey/1/surveyresponse")),
+    "HTTP 500"
+  )
+})
+

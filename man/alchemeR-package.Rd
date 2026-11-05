@@ -8,8 +8,21 @@
 \description{
 Provides functions to access Alchemer data directly into R using the 'Alchemer' API. 'Alchemer' \url{https://www.alchemer.com/} is an online survey and data collection software platform. See \url{https://apihelp.alchemer.com/help} for more information about their API. This package is community-maintained and is not officially supported by 'Alchemer'.
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/grousell/alchemeR}
+  \item Report bugs at \url{https://github.com/grousell/alchemeR/issues}
+}
+
+}
 \author{
-\strong{Maintainer}: Rousell Greg \email{grousell@gmail.com}
+\strong{Maintainer}: Greg Rousell \email{grousell@gmail.com}
+
+Other contributors:
+\itemize{
+  \item Jason Locklin \email{Jason@Locklin.science} [contributor]
+}
 
 }
 \keyword{internal}
