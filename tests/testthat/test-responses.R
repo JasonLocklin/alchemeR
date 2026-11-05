@@ -1,0 +1,350 @@
+dict <- function() dictionary_from_definition(definition())
+
+test_that("every answer shape lands in its column, in dictionary order", {
+  res <- parse_responses(pages_of(response(1, full_answers())), dict())
+  out <- lapply(res, as.vector) # drop the label attributes
+  expect_equal(nrow(res), 1)
+  expect_equal(
+    names(out)[-(1:10)],
+    c(
+      "Q3",
+      "Q4_10005",
+      "Q4_10006",
+      "Q6",
+      "Q7",
+      "Q9",
+      "Q12_10020",
+      "Q13",
+      "Q14",
+      "Q15_10030",
+      "Q15_10031",
+      "Q16"
+    )
+  )
+  expect_equal(out$Q3, "1") # reporting value, not the title
+  expect_equal(out$Q4_10005, "Apple")
+  expect_true(is.na(out$Q4_10006))
+  expect_equal(out$Q6, "34") # numeric text box: cleaned text
+  expect_equal(out$Q9, "Yes")
+  expect_equal(out$Q12_10020, "Opt X")
+  expect_equal(out$Q13, "Pat") # signature: name only
+  expect_equal(out$Q14, "abc")
+  expect_equal(c(out$Q15_10030, out$Q15_10031), c(2, 1))
+  expect_equal(out$Q16, 7)
+  expect_false(any(grepl("base64", unlist(out))))
+})
+
+test_that("system columns are typed and dates are Toronto instants", {
+  out <- parse_responses(pages_of(response(1, full_answers())), dict())
+  expect_type(out$id, "integer")
+  expect_false(out$is_test_data)
+  expect_s3_class(out$date_submitted, "POSIXct")
+  expect_equal(attr(out$date_submitted, "tzone"), "America/Toronto")
+  expect_equal(format(out$date_submitted, tz = "UTC"), "2026-11-01 05:31:00")
+  expect_equal(format(out$date_updated, tz = "UTC"), "2026-11-01 05:31:05")
+  expect_true(is.na(out$data_quality))
+})
+
+test_that("labels are attached to answer columns", {
+  out <- parse_responses(pages_of(response(1, full_answers())), dict())
+  expect_equal(attr(out$Q3, "label"), "Q3 colour ?")
+  expect_equal(attr(out$Q4_10005, "label"), "Fruit: Apple")
+  expect_equal(attr(out$Q9, "label"), "Grid: Row 1")
+})
+
+test_that("a blank response (survey_data []) keeps every answer column", {
+  out <- parse_responses(
+    pages_of(
+      response(1, full_answers()),
+      response(2, list(), status = "Partial")
+    ),
+    dict()
+  )
+  expect_equal(nrow(out), 2)
+  expect_equal(sum(grepl("^Q", names(out))), 12)
+  expect_true(all(is.na(out[2, grepl("^Q", names(out))])))
+})
+
+test_that("zero rows keep the column set and types", {
+  out <- parse_responses(list(list(data = list())), dict())
+  expect_equal(nrow(out), 0)
+  expect_equal(sum(grepl("^Q", names(out))), 12)
+  expect_type(out$Q6, "character")
+  expect_type(out$Q16, "double")
+  expect_s3_class(out$date_updated, "POSIXct")
+})
+
+test_that("key drift, partial and ids out of order are handled", {
+  a <- full_answers()
+  a$`14` <- NULL
+  out <- parse_responses(
+    pages_of(
+      response(9, a),
+      response(2, full_answers(), status = "Disqualified")
+    ),
+    dict()
+  )
+  expect_equal(out$id, c(9L, 2L))
+  expect_equal(out$status, c("Complete", "Disqualified"))
+  expect_equal(as.vector(out$Q14), c(NA, "abc"))
+})
+
+test_that("numeric text boxes are cleaned text; odd values warn and are kept", {
+  rows <- list(
+    response(1, full_answers("1,000")),
+    response(2, full_answers("N/A")),
+    response(3, full_answers(" 12 ")),
+    response(4, full_answers("-")),
+    response(5, full_answers(".5"))
+  )
+  out <- parse_responses(list(list(data = rows)), dict())
+  expect_equal(as.vector(out$Q6), c("1000", NA, "12", NA, ".5"))
+
+  rows <- list(
+    response(1, full_answers("12 kg")),
+    response(2, full_answers("0x10")),
+    response(3, full_answers("1,5"))
+  )
+  expect_warning(
+    out <- parse_responses(list(list(data = rows)), dict()),
+    "Column Q6: 3 value.*kept as text.*'99 aa', '9a99', '9,9'"
+  )
+  expect_equal(as.vector(out$Q6), c("12 kg", "0x10", "1,5"))
+})
+
+test_that("the warning never shows the raw values", {
+  rows <- list(response(1, full_answers("416-162-7201")))
+  w <- expect_warning(parse_responses(list(list(data = rows)), dict()))
+  expect_false(grepl("162", conditionMessage(w)))
+  expect_match(conditionMessage(w), "999-999-9999")
+})
+
+test_that("answers missing from the definition are kept with a warning", {
+  a <- full_answers()
+  a$`99` <- list(id = 99, type = "TEXTBOX", answer = "new")
+  expect_warning(
+    out <- parse_responses(pages_of(response(1, a)), dict()),
+    "Q99"
+  )
+  expect_equal(out$Q99, "new")
+  expect_equal(tail(names(out), 1), "Q99")
+})
+
+test_that("an unexpected time zone suffix is an error", {
+  r <- response(1, full_answers(), date_submitted = "2026-11-01 05:31:00 EDT")
+  expect_error(parse_responses(pages_of(r), dict()), "time zone")
+})
+
+test_that("the DST fall-back hour stays two instants after a file round trip", {
+  rows <- list(
+    response(1, full_answers(), date_submitted = "2026-11-01 05:30:00 GMT"),
+    response(2, full_answers(), date_submitted = "2026-11-01 06:30:00 GMT")
+  )
+  out <- parse_responses(list(list(data = rows)), dict())
+  f <- withr::local_tempfile(fileext = ".rds")
+  saveRDS(out, f)
+  back <- readRDS(f)
+  expect_equal(
+    format(back$date_submitted, "%H:%M %Z"),
+    c("01:30 EDT", "01:30 EST")
+  )
+  expect_equal(length(unique(back$date_submitted)), 2)
+  expect_equal(attr(back$Q3, "label"), "Q3 colour ?")
+})
+
+test_that("url variables appear for SSO surveys only, with safe names", {
+  uv <- list(
+    `https://idp/claim/email` = list(
+      key = "k",
+      value = "a@b.org",
+      type = "url"
+    ),
+    src = list(key = "src", value = "x", type = "url")
+  )
+  rows <- list(
+    response(1, full_answers(), url_variables = uv),
+    response(2, full_answers())
+  )
+  out <- parse_responses(list(list(data = rows)), dict(), sso = TRUE)
+  expect_equal(out$url_email, c("a@b.org", NA)) # last segment of a URL-shaped name
+  expect_equal(out$url_src, c("x", NA))
+  expect_false(any(grepl(
+    "^url_",
+    names(parse_responses(list(list(data = rows)), dict()))
+  )))
+
+  clash <- list(a.b = list(value = "1"), `a-b` = list(value = "2"))
+  expect_error(
+    parse_responses(
+      pages_of(response(1, full_answers(), url_variables = clash)),
+      dict(),
+      sso = TRUE
+    ),
+    "collide"
+  )
+})
+
+test_that("data_quality becomes JSON text", {
+  r <- response(
+    1,
+    full_answers(),
+    data_quality = list(checkbox = list(all = list(4)))
+  )
+  out <- parse_responses(pages_of(r), dict())
+  expect_match(out$data_quality, "checkbox")
+})
+
+test_that("a 10 000-row page parses in reasonable time", {
+  rows <- lapply(seq_len(10000), \(i) response(i, full_answers()))
+  t <- system.time(out <- parse_responses(list(list(data = rows)), dict()))[[
+    "elapsed"
+  ]]
+  expect_equal(nrow(out), 10000)
+  expect_lt(t, 20)
+})
+
+test_that("a radio grid row maps to one column, whichever option cell holds it", {
+  a <- full_answers()
+  a$`11` <- NULL
+  a$`8` <- list(
+    id = 8,
+    type = "TABLE",
+    subquestions = list(
+      `9` = list(
+        `10010` = list(id = 10010, parent = 9, answer = NA),
+        `10011` = list(id = 10011, parent = 9, answer = "Yes")
+      )
+    )
+  )
+  a$`9` <- NULL
+  out <- parse_responses(pages_of(response(1, a)), dict())
+  expect_equal(as.vector(out$Q9), "Yes")
+})
+
+test_that("URL-shaped variable names use the last segment unless that clashes", {
+  claims <- "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/"
+  uv <- list(
+    list(value = "Ann"),
+    list(value = "x"),
+    list(value = "y"),
+    list(value = "z")
+  )
+  names(uv) <- c(
+    paste0(claims, "givenname"),
+    "NameID",
+    "http://a.org/id",
+    "http://b.org/id"
+  )
+  out <- parse_responses(
+    pages_of(response(1, full_answers(), url_variables = uv)),
+    dict(),
+    sso = TRUE
+  )
+  expect_equal(
+    grep("^url_", names(out), value = TRUE),
+    c("url_givenname", "url_NameID", "url_http_a_org_id", "url_http_b_org_id")
+  )
+  expect_equal(out$url_givenname, "Ann")
+})
+
+test_that("a blank rank is NA and raises no warning", {
+  a <- full_answers()
+  a$`15`$answer <- list(
+    list(id = 10030, option = "First", rank = 1),
+    list(id = 10031, option = "Second", rank = "")
+  )
+  expect_no_warning(out <- parse_responses(pages_of(response(1, a)), dict()))
+  expect_equal(c(out$Q15_10030, out$Q15_10031), c(1, NA))
+})
+
+test_that("an answer that cannot be placed in a column raises a warning", {
+  a <- full_answers()
+  a$`4`$answer <- "stray" # a checkbox element that also carries an element-level answer
+  expect_warning(
+    parse_responses(pages_of(response(1, a)), dict()),
+    "1 of 12 answers in the raw data were not placed"
+  )
+  b <- full_answers()
+  b$`6` <- NULL # nothing lost when an answer is simply absent
+  expect_no_warning(parse_responses(pages_of(response(1, b)), dict()))
+})
+
+test_that("a grid row given as one element maps by its own id", {
+  a <- full_answers()
+  a$`9` <- NULL
+  a$`8` <- list(
+    id = 8,
+    type = "parent",
+    subquestions = list(
+      `9` = list(
+        id = 9,
+        type = "RADIO",
+        parent = 8,
+        answer = "Yes",
+        shown = TRUE
+      )
+    )
+  )
+  a$`11`$subquestions <- list(
+    `12` = list(
+      id = 12,
+      type = "parent",
+      parent = 11,
+      options = list(
+        `10020` = list(id = 10020, option = "Opt X", answer = "Opt X")
+      )
+    )
+  )
+  expect_no_warning(out <- parse_responses(pages_of(response(1, a)), dict()))
+  expect_equal(as.vector(out$Q9), "Yes")
+  expect_equal(as.vector(out$Q12_10020), "Opt X")
+})
+
+test_that("a textbox list has one column per option", {
+  def <- definition()
+  def$pages[[1]]$questions <- c(
+    def$pages[[1]]$questions,
+    list(item(
+      20,
+      "MULTI_TEXTBOX",
+      "Contact",
+      list(opt(10040, "Name"), opt(10041, "Phone"))
+    ))
+  )
+  a <- full_answers()
+  a$`20` <- list(
+    id = 20,
+    type = "parent",
+    options = list(`10041` = list(id = 10041, option = "Phone", answer = "555"))
+  )
+  d <- dictionary_from_definition(def)
+  expect_no_warning(out <- parse_responses(pages_of(response(1, a)), d))
+  expect_equal(c(out$Q20_10040, out$Q20_10041), c(NA, "555"))
+  expect_equal(attr(out$Q20_10041, "label"), "Contact: Phone")
+})
+
+test_that("student numbers written 999-999-999 lose their dashes; ranges do not", {
+  expect_equal(
+    clean_number(c("123-456-789", "(123-456-789)", "1,000")),
+    c(123456789, 123456789, 1000)
+  )
+  expect_warning(x <- clean_number(c("15-20", "416-555-1234")), "2 value")
+  expect_equal(x, c(NA_real_, NA_real_))
+})
+
+test_that("as text, leading zeros stay and only odd values warn", {
+  expect_no_warning(
+    x <- clean_number(c("007", "1,000", " 123-456-789 ", "n/a"), as_text = TRUE)
+  )
+  expect_equal(x, c("007", "1000", "123456789", NA))
+  expect_warning(
+    x <- clean_number(c("12 kg", "5"), "Q1", as_text = TRUE),
+    "Column Q1: 1 value.*kept as text"
+  )
+  expect_equal(x, c("12 kg", "5"))
+})
+
+test_that("a number item (slider) still becomes NA for odd values", {
+  expect_warning(x <- clean_number(c("12 kg", "007")), "set to NA")
+  expect_equal(x, c(NA, 7))
+})
