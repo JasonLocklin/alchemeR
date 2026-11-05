@@ -1,0 +1,146 @@
+---
+title: "Alchemer account archive"
+format:
+  html:
+    embed-resources: true
+params:
+  archive_dir: "alchemer_archive"
+  min_age: 600
+  refresh: "auto"
+---
+
+Keeps one `survey_<id>.rds` file per survey of the account in `archive_dir`,
+with test data included, and records what happened to each survey. Only
+read-only requests are sent. Credentials are read from
+`ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET`. Copy this file with
+`file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".")`.
+
+Audit trail: this page for the run, and `archive_log.csv` in `archive_dir`, which
+gets one row per survey appended on every run.
+
+```{r}
+#| label: archive
+library(alchemeR)
+dir <- params$archive_dir
+dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+run_at <- Sys.time()
+
+surveys <- all_surveys()
+saveRDS(surveys, file.path(dir, "surveys.rds")) # the account list at run time
+
+# Fetch one survey; keep its run message and its warnings instead of letting
+# them scroll past, and turn an error into a row.
+one <- function(id) {
+  notes <- character()
+  warns <- character()
+  out <- tryCatch(
+    withCallingHandlers(
+      fetch_survey(id, dir = dir, refresh = params$refresh, min_age = params$min_age,
+                   include_test = TRUE),
+      message = \(m) {
+        note <- trimws(conditionMessage(m))
+        # httr2 shows each retry wait as a progress bar: one note is enough
+        if (grepl("retry backoff", note)) note <- "retried after a server error"
+        notes <<- union(notes, note)
+        invokeRestart("muffleMessage")
+      },
+      warning = \(w) {
+        warns <<- c(warns, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = \(e) e
+  )
+  failed <- inherits(out, "error")
+  last <- if (length(notes) > 0) notes[length(notes)] else NA_character_
+  data.frame(
+    id = id,
+    status = if (failed) "error" else if (length(warns) > 0) "warning" else "ok",
+    rows = if (failed) NA_integer_ else nrow(out),
+    latest_update = if (failed) as.POSIXct(NA) else attr(out, "alchemer")$max_date_updated,
+    requests = suppressWarnings(as.integer(sub(".*, (\\d+) requests.*", "\\1", last))),
+    action = paste(sub("^Survey \\d+: ", "", notes), collapse = " | "),
+    problems = paste(c(if (failed) conditionMessage(out), warns), collapse = " | ")
+  )
+}
+result <- dplyr::bind_rows(lapply(surveys$id, one))
+
+files <- file.path(dir, paste0("survey_", result$id, ".rds"))
+overview <- dplyr::tibble(
+  result[c("id", "status")],
+  title = surveys$title,
+  result[c("rows", "latest_update", "requests")],
+  # a failed survey keeps its old file, so its size would look like a success
+  size_mb = ifelse(result$status == "error", NA, round(file.size(files) / 1e6, 2)),
+  result[c("action", "problems")]
+)
+
+# One row per survey is appended on every run: a history across renders.
+log_file <- file.path(dir, "archive_log.csv")
+log_rows <- cbind(run_at = format(run_at, "%Y-%m-%d %H:%M:%S %Z"), overview)
+log_rows$latest_update <- format(log_rows$latest_update, "%Y-%m-%d %H:%M:%S %Z")
+log_rows[] <- lapply(log_rows, \(x) if (is.character(x)) gsub("[\r\n]+", " ", x) else x)
+utils::write.table(
+  log_rows, log_file, sep = ",", row.names = FALSE, qmethod = "double",
+  append = file.exists(log_file), col.names = !file.exists(log_file)
+)
+
+orphans <- setdiff(
+  sub("^survey_(\\d+)\\.rds$", "\\1", list.files(dir, "^survey_\\d+\\.rds$")),
+  as.character(surveys$id)
+)
+```
+
+## This run
+
+```{r}
+#| label: run-summary
+#| echo: false
+knitr::kable(data.frame(
+  item = c("Run started", "alchemeR", "R", "archive_dir", "refresh", "min_age (s)",
+           "Surveys on the account", "Requests sent"),
+  value = c(format(run_at, "%Y-%m-%d %H:%M:%S %Z"), as.character(packageVersion("alchemeR")),
+            R.version.string, normalizePath(dir, winslash = "/"), params$refresh, params$min_age,
+            nrow(surveys), sum(result$requests, na.rm = TRUE))
+))
+```
+
+`r sum(overview$status == "ok")` surveys ok, `r sum(overview$status == "warning")` with
+warnings, `r sum(overview$status == "error")` failed;
+`r format(sum(overview$rows, na.rm = TRUE), big.mark = ",")` responses,
+`r round(sum(overview$size_mb, na.rm = TRUE), 1)` MB.
+
+## Failures and warnings
+
+A survey with a warning was downloaded, but check the warning: for example answers
+that could not be placed in a column, numbers set to `NA`, or a file that could
+not be saved (the data is then in memory only and the file on disk is the old one).
+Warnings arise while data is downloaded and parsed, so they show on the run that
+downloaded the survey; a later run that only reads the file reports it as ok.
+`archive_log.csv` keeps the earlier runs.
+
+```{r}
+#| label: issues
+#| echo: false
+issues <- overview[overview$status != "ok", c("id", "title", "status", "problems")]
+if (nrow(issues) > 0) knitr::kable(issues) else cat("None.")
+```
+
+## All surveys
+
+`latest_update` is the newest response change in the file (Toronto time); `action` is the
+run message of `fetch_survey()`.
+
+```{r}
+#| label: all-surveys
+#| echo: false
+knitr::kable(overview[order(overview$id), names(overview) != "problems"])
+```
+
+## Files for surveys no longer on the account
+
+```{r}
+#| label: orphans
+#| echo: false
+if (length(orphans) > 0) cat(paste0("survey_", orphans, ".rds"), sep = "\n") else cat("None.")
+```
