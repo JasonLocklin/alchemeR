@@ -1,22 +1,30 @@
 Package: alchemeR
 Title: Download 'Alchemer' Survey Data
-Version: 0.0.0.9000
-Authors@R: 
-    person("Rousell", "Greg", , "grousell@gmail.com", role = c("aut", "cre"))
+Version: 0.1.0
+Authors@R: c(
+    person("Greg", "Rousell", , "grousell@gmail.com", role = c("aut", "cre")),
+    person("Jason", "Locklin", , "Jason@Locklin.science", role = "ctb")
+  )
 Description: Provides functions to access Alchemer data directly into R using 
   the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey 
   and data collection software platform. See <https://apihelp.alchemer.com/help> 
   for more information about their API. This package is community-maintained and
   is not officially supported by 'Alchemer'.
 License: MIT + file LICENSE
+URL: https://github.com/grousell/alchemeR
+BugReports: https://github.com/grousell/alchemeR/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.2.3
-Imports: 
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
     dplyr,
     glue,
-    httr2,
+    httr2 (>= 1.2.0),
     jsonlite,
     stringr,
     tidyr,
     utils
+Suggests: 
+    knitr
