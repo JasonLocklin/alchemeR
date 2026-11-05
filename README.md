@@ -4,11 +4,12 @@
 # alchemeR
 
 <!-- badges: start -->
+
 [![R](https://github.com/grousell/alchemeR/actions/workflows/r.yml/badge.svg)](https://github.com/grousell/alchemeR/actions/workflows/r.yml)
 <!-- badges: end -->
 
 The goal of alchemeR is to provide tools to access Alchemer survey data
-from their API and pull into an R environment. More informtion on the
+from their API and pull into an R environment. More information on the
 Alchemer API and set up can be found here:
 <https://apihelp.alchemer.com/help>
 
@@ -18,52 +19,155 @@ You can install the development version of alchemeR from
 [GitHub](https://github.com/) with:
 
 ``` r
-# install.packages("devtools")
-devtools::install_github("grousell/alchemeR")
+# install.packages("pak")
+pak::pak("grousell/alchemeR")
 ```
+
+## Credentials
+
+Every function takes the Alchemer API token and secret as the arguments
+`token` and `secret_key`, or reads them from the environment variables
+`ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET`. The package only sends
+read-only (GET) requests and never prints your credentials.
 
 ## Example
 
-### List of all surveys:
-
 ``` r
 library(alchemeR)
 
-all_surveys(
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-  )
+all_surveys()                                   # one row per survey
+
+df   <- fetch_survey(123)       # a labelled tibble; keeps data_raw/survey_123.rds (folder is created)
+dict <- fetch_data_dictionary(123)              # one row per answer option
 ```
 
-### Download survey data:
+`fetch_survey()` prints one line saying what it did, for example
+`Survey 123: incremental pull (37 rows changed), 4 requests, 2.1 s`. The
+request count is the number of API calls; a call retried after a rate
+limit or server error counts once. Use `suppressMessages()` to silence
+the line.
 
-This function downloads a .csv into the working directory. The larger
-the data set, the longer the API call can take. This prevents the needs
-to constantly make an API call when conducting analyses.
+### What happens when you run it again
 
-The `survey_name` argument can include folders. For example,
-`"data/survey_name"` will save the .csv in the data subfolder.
+- Within `min_age` seconds (default 600) of the last check: the file is
+  read, no request is made.
+- Otherwise it asks Alchemer whether anything changed (2 requests). If
+  not, the file is kept; if so, only recently updated responses are
+  downloaded and merged.
+- Everything is downloaded again when the survey was edited, an older
+  response was deleted, `include_test` changed, or the oldest rows are
+  over `full_refresh_days` (default 90) days old and the survey is
+  active. The message tells you why and roughly how many requests it
+  needs.
+- `refresh = "full"` forces a full download; `refresh = "local"` reads
+  the file without any request.
+- A failed download never damages the file. If the file cannot be
+  written (open in another program, locked by a synced folder), you get
+  a warning and the data anyway.
+
+### The data
+
+- Columns: `survey_id`, `id`, `status`, `is_test_data`, dates (Toronto
+  time), `response_time`, `language`, `link_id`, `data_quality` (JSON
+  text), then one column per answer in questionnaire order: `Q<id>`, or
+  `Q<id>_<option id>` for each option of checkbox, rank and textbox-list
+  items (table rows use their own ids; a custom table cell is
+  `Q<column id>_r<row number>`), and `fetched_at`. Single sign-on
+  surveys also get `url_<name>` columns (a URL-shaped name such as
+  `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname`
+  becomes `url_givenname`, or its full cleaned name if two would clash);
+  other URL variables are not kept.
+- Question text is the `label` attribute of each column (shown by
+  RStudio’s viewer, `gtsummary`, `sjPlot`). `bind_rows()` drops labels.
+- Sliders, rank and constant-sum items are numbers; everything else is
+  text. A value in one of them that is not a number becomes `NA`, with a
+  warning that shows its shape but not its value.
+- Text boxes set to “numbers” in Alchemer stay **text**: Alchemer does
+  not enforce the setting, and they often hold ids whose leading zeros
+  matter (`012345678`). The text is cleaned (spaces, `1,000` → `1000`,
+  student numbers `123-456-789` → `123456789`, `n/a` → `NA`), and
+  anything still not a number (for example `12 kg`) raises a warning
+  with its shape but is kept. For a real quantity, use `as.numeric()`;
+  the dictionary marks these columns `numeric_text`.
+- A choice answer holds the option’s *reporting value*, not its title.
+  Recode with the dictionary:
+  `dict |> dplyr::filter(question_id == "Q3") |> dplyr::select(option_value, option_label)`.
+- The dictionary is also in `attr(df, "alchemer")$dictionary`, next to
+  the survey metadata.
+- All statuses are returned (`Complete`, `Partial`, `Disqualified`);
+  filter on `status`. Test data is excluded unless
+  `include_test = TRUE`; use a separate `dir` if you need both.
+- Signature images are not kept (only the typed name), and identifiers
+  such as IP address, session and contact ids are not kept. Hidden
+  values and open-text answers are returned as collected.
+- Responses deleted in Alchemer disappear from the file at the next full
+  download (or when they fall in the recent window).
+
+### Recipes
 
 ``` r
-library(alchemeR)
+# Complete responses since a date, one per respondent (most answers, then latest)
+library(dplyr)
+answers <- c("Q20", "Q21", "Q22")                 # the questions that matter
+df |>
+  filter(
+    status == "Complete",
+    date_submitted >= ymd("2026-10-06", tz = "America/Toronto")
+  ) |>
+  mutate(n_answered = rowSums(!is.na(pick(all_of(answers))))) |>
+  filter(n_answered > 0) |>
+  arrange(desc(n_answered), desc(id)) |>
+  distinct(url_NameID, .keep_all = TRUE)           # single sign-on id; text, join it as text
 
-fetch_survey(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret"),
-  "SURVEY_NAME"
-  )
-
-df <- read.csv("survey_data.csv")
+# Question text (the column label) instead of retyping it
+purrr::map_chr(df[answers], \(x) attr(x, "label"))
 ```
 
-### Fetch survey data dictionary:
+- **Dates: use lubridate, not base R date functions.** The date columns
+  are date-times shown in Toronto time, and `library(alchemeR)` attaches
+  lubridate. Filter with `ymd("2026-10-06", tz = "America/Toronto")` as
+  above, take the day with `date(date_submitted)`, and add calendar time
+  with `days()` or `weeks()`. Base R gets these wrong quietly:
+  `as.Date()` takes the UTC day (an evening response, after 7 p.m. in
+  winter or 8 p.m. in summer, lands on the next day), `as.POSIXct()`
+  without `tz` uses the computer’s time zone, and `ifelse()` drops the
+  date class (use `dplyr::if_else()`). Never parse the columns again
+  with `ymd_hms()`: they are already date-times, and a value at exactly
+  midnight becomes `NA`.
+- **CSV and time zones.** A CSV file has no time zone:
+  `readr::write_csv()` writes date-times in UTC (`2026-01-14T03:00:00Z`
+  for 10 p.m. in Toronto), so a script that still writes Alchemer dates
+  to CSV shows them 4–5 hours late to whatever reads the file. If a CSV
+  is needed, write Toronto text first:
+  `mutate(across(where(lubridate::is.POSIXct), \(x) format(x, "%Y-%m-%d %H:%M:%S")))`.
+  The `.rds` file (and parquet) keep the instant.
+- **Scheduled scripts:** give `dir` explicitly. Task Scheduler does not
+  start R in your project folder (unless “Start in” is set), so the
+  default `dir = "data_raw"` is relative to that folder and would put
+  the `.rds` files somewhere else, or fail to write them and download
+  everything again on every run.
+- **Ids from single sign-on are text.** Keep leading zeros by joining
+  text to text (`student_no` in your student table is text too).
+- **A warning about answers “not placed in a column”** means the survey
+  contains an answer shape the package does not know; some answers are
+  missing from the table. Please report it.
+
+### Several surveys, other tools
 
 ``` r
-
-survey_data_dictionary <- fetch_data_dictionary(
-  "SURVEY_ID", 
-  keyring::key_get("alchemer", "token"),
-  keyring::key_get("alchemer", "secret")
-)
+ids <- c(123, 456)
+all_data <- purrr::map(ids, fetch_survey, refresh = "local") |> dplyr::bind_rows()
+arrow::write_parquet(fetch_survey(123), "survey_123.parquet")   # for Python, Power BI
 ```
+
+### Archive a whole account
+
+Copy the report and render it with Quarto:
+
+``` r
+file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".")
+# quarto render Archive_account.qmd -P archive_dir:my_archive
+```
+
+The report lists each survey’s status, warnings and errors, and every
+run appends to `archive_log.csv` in the archive folder.
