@@ -21,12 +21,9 @@ Depends:
     lubridate
 Imports:
     dplyr,
-    glue,
     httr2 (>= 1.2.0),
     jsonlite,
     stats,
-    stringr,
-    tidyr,
     utils
 Suggests: 
     knitr

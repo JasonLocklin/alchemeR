@@ -4,24 +4,40 @@
 \alias{fetch_data_dictionary}
 \title{Fetch Alchemer Data Dictionary}
 \usage{
-fetch_data_dictionary(survey_id, token = "token", secret_key = "secret_key")
+fetch_data_dictionary(
+  survey_id,
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
+)
 }
 \arguments{
-\item{survey_id}{Alchemer survey number, retrieved from survey URL}
+\item{survey_id}{Alchemer survey number, retrieved from the survey URL.}
 
-\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication)}
+\item{token}{Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+Defaults to the environment variable \code{ALCHEMER_API_TOKEN}.}
 
-\item{secret_key}{Alchemer API secret key}
+\item{secret_key}{Alchemer API secret key. Defaults to the environment variable
+\code{ALCHEMER_API_SECRET}.}
 }
 \value{
-A data frame of question numbers and question labels
+A tibble with one row per answer option: \code{question_id} (the column name in
+the survey data), \code{qid}, \code{parent} (the table question of a table row),
+\code{type}, \code{base_type}, \code{r_type} (\code{"double"} or \code{"character"}), \code{numeric_text}
+(\code{TRUE} for a text box set to numbers: text, cleaned and checked), \code{label} (the
+column label), \code{option_id}, \code{option_label} (the option text),
+\code{option_value} (the reporting value, which is what a choice answer holds in
+the survey data), \code{page}, \code{row_id} (the row of a custom table, \code{NA}
+elsewhere) and \code{order}.
 }
 \description{
-A function that retrieves a data dictionary from an Alchemer survey.
-Requires user to have set up an API with Alchemer, including
-a token and secret key. If custom reporting values are used in Alchemer, then
-the function will download the custome value.
+Reads the survey definition (one request) and returns the data dictionary:
+one row per answer option of every question that holds an answer, in
+questionnaire order. It is the same dictionary that \code{\link[=fetch_survey]{fetch_survey()}} stores
+in \code{attr(x, "alchemer")$dictionary}. Requires an Alchemer API token and
+secret key.
 }
 \examples{
-# fetch_data_dictionary("SURVEY_ID","YOUR-ALCHEMER_TOKEN","YOUR-ALCHEMER_SECRET_KEY")
+\dontrun{
+dict <- fetch_data_dictionary(123)
+}
 }
