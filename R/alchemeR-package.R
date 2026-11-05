@@ -1,4 +1,5 @@
 #' @keywords internal
+#' @importFrom lubridate with_tz
 "_PACKAGE"
 
 ## usethis namespace: start
