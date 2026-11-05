@@ -73,6 +73,17 @@ test_that("a survey without English text is an error", {
   expect_error(dictionary_from_definition(def), "English")
 })
 
+test_that("fetch_data_dictionary makes one GET of the definition", {
+  calls <- mock_api(\(req) json(list(result_ok = TRUE, data = definition())))
+  d <- fetch_data_dictionary(123)
+  expect_length(calls$reqs, 1)
+  expect_match(calls$reqs[[1]]$url, "/survey/123\\?")
+  expect_true("Q3" %in% d$question_id)
+  # unwrapped single object
+  mock_api(\(req) json(c(list(result_ok = TRUE), definition())))
+  expect_true("Q3" %in% fetch_data_dictionary(123)$question_id)
+})
+
 test_that("no answer-holding items: empty dictionary, all columns", {
   def <- definition()
   def$pages[[1]]$questions <- list(item(17, "INSTRUCTIONS", "Read this"))

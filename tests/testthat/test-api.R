@@ -127,3 +127,15 @@ test_that("a page that fails after its retries is an error", {
   )
 })
 
+test_that("every request of every exported function is a GET without _method", {
+  calls <- survey_api(5)
+  all_surveys()
+  fetch_data_dictionary(123)
+  suppressMessages(fetch_survey(123, dir = withr::local_tempdir()))
+  expect_gte(length(calls$reqs), 4)
+  for (req in calls$reqs) {
+    expect_equal(req$method, "GET")
+    expect_null(req$body)
+    expect_false("_method" %in% names(query_of(req)))
+  }
+})

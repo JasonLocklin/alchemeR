@@ -1,62 +1,42 @@
 #' Fetch Alchemer Data Dictionary
 #'
-#' A function that retrieves a data dictionary from an Alchemer survey.
-#' Requires user to have set up an API with Alchemer, including
-#' a token and secret key. If custom reporting values are used in Alchemer, then
-#' the function will download the custome value.
+#' Reads the survey definition (one request) and returns the data dictionary:
+#' one row per answer option of every question that holds an answer, in
+#' questionnaire order. It is the same dictionary that [fetch_survey()] stores
+#' in `attr(x, "alchemer")$dictionary`. Requires an Alchemer API token and
+#' secret key.
 #'
 #' @param survey_id
-#' Alchemer survey number, retrieved from survey URL
-
+#' Alchemer survey number, retrieved from the survey URL.
+#'
 #' @param token
-#' Alchemer API token (https://apihelp.alchemer.com/help/authentication)
+#' Alchemer API token (https://apihelp.alchemer.com/help/authentication).
+#' Defaults to the environment variable `ALCHEMER_API_TOKEN`.
 #'
 #' @param secret_key
-#' Alchemer API secret key
-
+#' Alchemer API secret key. Defaults to the environment variable
+#' `ALCHEMER_API_SECRET`.
+#'
 #' @return
-#' A data frame of question numbers and question labels
+#' A tibble with one row per answer option: `question_id` (the column name in
+#' the survey data), `qid`, `parent` (the table question of a table row),
+#' `type`, `base_type`, `r_type` (`"double"` or `"character"`), `numeric_text`
+#' (`TRUE` for a text box set to numbers: text, cleaned and checked), `label` (the
+#' column label), `option_id`, `option_label` (the option text),
+#' `option_value` (the reporting value, which is what a choice answer holds in
+#' the survey data), `page`, `row_id` (the row of a custom table, `NA`
+#' elsewhere) and `order`.
 #' @export
 #'
 #' @examples
-#' # fetch_data_dictionary("SURVEY_ID","YOUR-ALCHEMER_TOKEN","YOUR-ALCHEMER_SECRET_KEY")
-
-fetch_data_dictionary <- function(survey_id, token = "token", secret_key = "secret_key"){
-
-  survey_url <- glue::glue("https://api.alchemer-ca.com/v5/survey/{survey_id}/surveyquestion")
-  survey_req <- httr2::request(survey_url)
-
-  survey <- survey_req |>
-    httr2::req_url_query(
-      `api_token` = token,
-      `api_token_secret` = secret_key,
-      `resultsperpage` = 25,
-      page = 1
-    )
-
-  temp_df <- jsonlite::fromJSON(survey$url, flatten = TRUE)$data
-  
-  # Coerce all columns in the nested data frames to character vectors
-  temp_df$options <- lapply(temp_df$options, function(x) {
-    if (is.null(x)) return(NULL)
-    as.data.frame(lapply(x, as.character), stringsAsFactors = FALSE)
-  })
-
-  temp_df |>
-    dplyr::select(id,
-                  "label" = title.English,
-                  options) |>
-    tidyr::unnest(options,
-                  names_sep = "_",
-                  keep_empty = TRUE) |>
-    dplyr::select(
-      "question_id" = id,
-      label,
-      options_id,
-      options_value) |>
-    dplyr::mutate(question_id = glue::glue("Q{question_id}"))
-
+#' \dontrun{
+#' dict <- fetch_data_dictionary(123)
+#' }
+fetch_data_dictionary <- function(
+  survey_id,
+  token = Sys.getenv("ALCHEMER_API_TOKEN"),
+  secret_key = Sys.getenv("ALCHEMER_API_SECRET")
+) {
+  survey_id <- check_survey_id(survey_id)
+  dictionary_from_definition(get_definition(survey_id, token, secret_key))
 }
-
-
-
