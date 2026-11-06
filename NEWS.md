@@ -102,7 +102,5 @@ survive the round trip in RDS, unlike in a CSV).
 * Requires R >= 4.1 and httr2 >= 1.2.0. `glue`, `stringr` and `tidyr` are no
   longer needed. `library(alchemeR)` attaches `lubridate`, the recommended way
   to work with the date columns.
-* New tests cover every function. They run against mocked API responses, so
-  no credentials are needed. `R CMD check` is clean.
 * The README is rewritten for analysts: setup, what happens on a re-run, the
   data, recipes and archiving.

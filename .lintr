@@ -1,0 +1,10 @@
+linters: linters_with_defaults(
+    line_length_linter(100),
+    indentation_linter = NULL
+  )
+exclusions: list(
+    "inst",
+    "tests/testthat.R",
+    "tests/testthat" = list(object_usage_linter = Inf)
+  )
+encoding: "UTF-8"
