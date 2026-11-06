@@ -68,12 +68,14 @@ api_get <- function(
   api_get_many(path, list(query), token, secret_key)[[1]]
 }
 
-# Pages requested at once by api_get_many(), and rows per page. Full
-# download of 8 805 rows (measured on a real account, 2026-11-04): 500
-# rows one at a time 220 s; 6 at once: 100 rows 55-65 s (87 requests), 250
-# rows 55 s (36 requests), 500 rows 64 s (18 requests).
+# Pages requested at once by api_get_many(), and rows per page. Alchemer's
+# gateway answers HTTP 504 for any request still running after 60 s, and a
+# page takes time per row (a 239-question survey: 33 KB and ~0.13 s per row,
+# 250-row pages 30-57 s with four in flight, one in three failed). 100-row
+# pages took 14-27 s with six in flight. Full download of 8 805 rows: 500 rows
+# one at a time 220 s; 6 at once: 100 rows 55-65 s, 250 rows 55 s.
 api_parallel <- 6
-api_per_page <- 250
+api_per_page <- 100
 
 # GET one path with several queries (pages), up to `api_parallel` at a time,
 # and return the parsed bodies in order. Errors are one line and never contain
