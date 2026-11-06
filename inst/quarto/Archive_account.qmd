@@ -12,7 +12,9 @@ params:
 Keeps one `survey_<id>.rds` file per survey of the account in `archive_dir`,
 with test data included, and records what happened to each survey. Only
 read-only requests are sent. Credentials are read from
-`ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET`. Copy this file with
+`ALCHEMER_API_TOKEN` and `ALCHEMER_API_SECRET`, or from the keyring entries
+`alchemer`/`token` and `alchemer`/`secret` when the keyring package is
+installed. Copy this file with
 `file.copy(system.file("quarto", "Archive_account.qmd", package = "alchemeR"), ".")`.
 
 Audit trail: this page for the run, and `archive_log.csv` in `archive_dir`, which
@@ -24,6 +26,15 @@ library(alchemeR)
 dir <- params$archive_dir
 dir.create(dir, showWarnings = FALSE, recursive = TRUE)
 run_at <- Sys.time()
+
+# Credentials from the keyring when it is installed and has them (these then win over the environment variables)
+try(
+  Sys.setenv(
+    ALCHEMER_API_TOKEN = keyring::key_get("alchemer", "token"),
+    ALCHEMER_API_SECRET = keyring::key_get("alchemer", "secret")
+  ),
+  silent = TRUE
+)
 
 surveys <- all_surveys()
 saveRDS(surveys, file.path(dir, "surveys.rds")) # the account list at run time

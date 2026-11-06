@@ -27,6 +27,7 @@ Imports:
     stats,
     utils
 Suggests: 
+    keyring,
     knitr,
     testthat (>= 3.0.0),
     withr

@@ -64,14 +64,17 @@ survive the round trip in RDS, unlike in a CSV).
   account. For each survey it reports the status (ok, warning or error), the
   warnings and errors, the run message, the newest response update and the
   request count. It also records the run settings. Each run appends its rows to
-  `archive_log.csv`.
+  `archive_log.csv`. Credentials come from the environment variables or, when
+  the keyring package is installed, from the keyring.
 * Each `fetch_survey()` call prints one message saying what it did, why, and
   how many requests it needed.
 * A warning is raised when answers in the raw data could not be placed in a
   column, so a survey with an unknown answer shape cannot lose data silently.
-* Large surveys download about 4 times faster. Pages hold 100 rows, and after
+* Large surveys download about 3 times faster. Pages hold 100 rows, and after
   the first page up to six are requested at once (still at most 2 requests per
-  second).
+  second). Alchemer answers HTTP 504 to a request that runs longer than 60
+  seconds, and a page of a survey with hundreds of questions needs about 0.13
+  seconds per row, so larger pages failed on such surveys.
 
 ## Bug fixes
 
