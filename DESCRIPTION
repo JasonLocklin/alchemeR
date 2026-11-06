@@ -3,7 +3,7 @@ Title: Download 'Alchemer' Survey Data
 Version: 0.1.0
 Authors@R: c(
     person("Greg", "Rousell", , "grousell@gmail.com", role = c("aut", "cre")),
-    person("Jason", "Locklin", , "Jason@Locklin.science", role = "ctb")
+    person("Jason", "Locklin", , "Jason@Locklin.science", role = "aut")
   )
 Description: Provides functions to access Alchemer data directly into R using 
   the 'Alchemer' API. 'Alchemer' <https://www.alchemer.com/> is an online survey 
