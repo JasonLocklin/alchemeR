@@ -24,7 +24,10 @@ test_that("a full pull returns a labelled tibble and writes one RDS file", {
   survey_api(600)
   expect_message(
     out <- fetch_survey(123, dir = dir),
-    "Survey 123: full pull \\(no usable local file\\), 600 rows, 4 requests"
+    sprintf(
+      "Survey 123: full pull \\(no usable local file\\), 600 rows, %d requests",
+      1 + ceiling(600 / api_per_page) # the definition, then the pages
+    )
   )
   expect_equal(nrow(out), 600)
   expect_equal(names(out)[1], "survey_id")

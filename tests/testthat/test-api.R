@@ -100,11 +100,11 @@ test_that("api_get_all errors when rows differ from total_count", {
 })
 
 test_that("a response submitted during the pull restarts it once", {
-  n <- 300 # 2 pages of 250
+  n <- 2 * api_per_page - 5 # 2 pages, the last not full
   calls <- mock_api(\(req) {
     # a student submits after page 1 of the first pull has been read
     if (length(calls$reqs) == 2) {
-      n <<- 301
+      n <<- n + 1
     }
     page_response(req, n, \(i) list(id = i))
   })
@@ -112,11 +112,11 @@ test_that("a response submitted during the pull restarts it once", {
   local_mocked_bindings(api_wait = \() waited <<- waited + 1)
   expect_message(
     pages <- api_get_all("survey/1/surveyresponse"),
-    "received 301 rows but total_count is 300.*waiting 60 s"
+    sprintf("received %d rows but total_count is %d.*waiting 60 s", n + 1, n)
   )
   expect_length(calls$reqs, 4) # 2 pages, then 2 pages again
   expect_equal(waited, 1) # Alchemer caches identical GETs for 60 s
-  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), 301)
+  expect_equal(sum(vapply(pages, \(p) length(p$data), 1L)), n)
 })
 
 test_that("a page that fails after its retries is an error", {
