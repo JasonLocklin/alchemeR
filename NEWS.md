@@ -69,7 +69,7 @@ survive the round trip in RDS, unlike in a CSV).
   how many requests it needed.
 * A warning is raised when answers in the raw data could not be placed in a
   column, so a survey with an unknown answer shape cannot lose data silently.
-* Large surveys download about 4 times faster. Pages hold 250 rows, and after
+* Large surveys download about 4 times faster. Pages hold 100 rows, and after
   the first page up to six are requested at once (still at most 2 requests per
   second).
 
