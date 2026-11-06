@@ -55,7 +55,12 @@ case "${1:-}" in
   check) check ;;
   sync)
     [[ $(git branch --show-current) == dev ]] || { echo "switch to dev first" >&2; exit 1; }
-    git merge --no-edit main
+    # main edits r.yml, dev deletes it (check.yml replaces it): keep dev's deletion
+    if ! git merge --no-edit main; then
+      [[ $(git diff --name-only --diff-filter=U) == .github/workflows/r.yml ]] || {
+        echo "conflicts to resolve by hand (keep dev's lines in DESCRIPTION Suggests)" >&2; exit 1; }
+      git rm -q .github/workflows/r.yml && git commit -q --no-edit
+    fi
     check ;;
   main-check)
     tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
