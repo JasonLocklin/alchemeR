@@ -8,7 +8,7 @@
 #   check       fail if dev and main differ outside the infrastructure list, if main
 #               holds any infrastructure, or if dev lacks a commit that is on main
 #   sync        on dev: merge main into dev, then run check
-#   main-check  run R CMD check on main in a throwaway worktree (no tests there)
+#   main-check  run R CMD check on main from a `git archive` of main in a temp dir (no tests there)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -58,8 +58,8 @@ case "${1:-}" in
     git merge --no-edit main
     check ;;
   main-check)
-    tmp=$(mktemp -d); trap 'git worktree remove --force "$tmp/w" 2>/dev/null; rm -rf "$tmp"' EXIT
-    git worktree add -q --detach "$tmp/w" "$MAIN"
-    (cd "$tmp" && R CMD build w >/dev/null && _R_CHECK_FORCE_SUGGESTS_=false R CMD check --no-manual alchemeR_*.tar.gz | tail -3) ;;
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    git archive --prefix=w/ "$MAIN" | tar -x -C "$tmp"
+    (cd "$tmp" && R CMD build w >/dev/null 2>&1 && _R_CHECK_FORCE_SUGGESTS_=false R CMD check --no-manual alchemeR_*.tar.gz 2>&1 | grep -E "NOTE|WARNING|ERROR|Status") ;;
   *) sed -n '2,13p' "$0"; exit 2 ;;
 esac
